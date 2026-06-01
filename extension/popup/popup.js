@@ -198,6 +198,8 @@ async function showRoomView(room, wsState) {
     $('toggle-guest-control').checked = settings.allowGuestControl;
 
     renderMemberList(room.members || [], 'member-list', 'member-count');
+    const syncAllBtn = $('btn-sync-all');
+    if (syncAllBtn) syncAllBtn.style.display = room.videoId ? '' : 'none';
     startMemberRefresh();
   } else {
     $('host-panel').style.display = 'none';
@@ -356,6 +358,12 @@ $('btn-leave').addEventListener('click', () => {
 });
 
 $('btn-catch-up').addEventListener('click', () => chrome.runtime.sendMessage({ type: 'catch_up' }));
+
+$('btn-sync-all').addEventListener('click', () => {
+  chrome.runtime.sendMessage({ type: 'sync_all' });
+  const btn = $('btn-sync-all');
+  if (btn) { btn.disabled = true; setTimeout(() => { btn.disabled = false; }, 3000); }
+});
 
 // ── 设置开关 ──────────────────────────────────────
 $('toggle-veto').addEventListener('change', e => {

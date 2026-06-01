@@ -319,6 +319,43 @@ func handleWS(cfg Config) http.HandlerFunc {
 					room.GuestControlAllowed = msg.Allowed
 				}
 
+			case "sync_all":
+				// 房主手动同步所有人到当前视频，不改变房间状态
+				if sid == room.HostSID {
+					notifyMsg := map[string]any{
+						"type":      "host_switched",
+						"video_id":  room.VideoID,
+						"platform":  room.Platform,
+						"is_live":   room.IsLive,
+						"host_name": hello.Name,
+						"sync_all":  true,
+					}
+					for s, m := range room.Members {
+						if s != sid {
+							_ = m.Send(notifyMsg)
+						}
+					}
+					log.Info().Str("room_id", room.RoomID).Msg("host sent sync_all")
+				}
+
+			case "host_transferred":
+				// 房主将房间转移到新地址，广播给所有房客
+				if sid == room.HostSID && msg.NewToken != "" {
+					transferMsg := map[string]any{
+						"type":      "host_transferred",
+						"new_token": msg.NewToken,
+						"video_id":  msg.VideoID,
+						"platform":  msg.Platform,
+						"title":     msg.MsgTitle,
+						"host_name": hello.Name,
+					}
+					for s, m := range room.Members {
+						if s != sid {
+							_ = m.Send(transferMsg)
+						}
+					}
+				}
+
 			case "leave":
 				deliberateLeave = true
 				room.Unlock()

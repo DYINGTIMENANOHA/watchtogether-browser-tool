@@ -233,6 +233,8 @@ function renderPanel() {
   if (!panel) return;
   if (!isInRoom) {
     renderIdlePanel();
+  } else if (isHost && !isActiveTab) {
+    renderHostTransferPanel();
   } else if (isHost) {
     renderHostPanel();
   } else {
@@ -432,6 +434,61 @@ function renderIdlePanelHistory() {
   });
 }
 
+function renderHostTransferPanel() {
+  const videoId  = adapter?.getVideoId() || '';
+  const platform = adapter?.getPlatform() || '';
+  const hasVideo = !!videoId;
+
+  panel.innerHTML = `
+    <div class="wt-panel-title">
+      WatchTogether
+      <button class="wt-panel-close" id="wt-pc-close">×</button>
+    </div>
+    <div class="wt-info" style="margin-bottom:10px;line-height:1.6;">${t('transfer_already_host')}</div>
+    ${hasVideo
+      ? `<button class="wt-btn primary" id="wt-transfer-btn">${t('transfer_btn')}</button>
+         <div id="wt-transfer-err" style="font-size:11px;color:#f66;margin-top:4px;min-height:14px;"></div>`
+      : `<div class="wt-info" style="color:#888;">${t('transfer_no_video')}</div>`}
+    <button class="wt-btn secondary" id="wt-transfer-cancel" style="margin-top:6px;">${t('cancel')}</button>
+  `;
+
+  panel.querySelector('#wt-pc-close')?.addEventListener('click', () => { panelVisible = false; panel.style.display = 'none'; });
+  panel.querySelector('#wt-transfer-cancel')?.addEventListener('click', () => { panelVisible = false; panel.style.display = 'none'; });
+
+  panel.querySelector('#wt-transfer-btn')?.addEventListener('click', () => {
+    const btn   = panel.querySelector('#wt-transfer-btn');
+    const errEl = panel.querySelector('#wt-transfer-err');
+    btn.disabled = true; btn.textContent = t('transfer_btn_loading');
+    if (errEl) errEl.textContent = '';
+
+    chrome.runtime.sendMessage({ type: 'get_nickname' }, r => {
+      const nickname = r?.nickname || '';
+      chrome.runtime.sendMessage({
+        type:        'transfer_room',
+        videoId,
+        platform,
+        title:       getVideoTitle(),
+        currentTime: adapter?.getCurrentTime() || 0,
+        paused:      adapter?.isPaused() !== false,
+        isLive:      adapter?.isLive() || false,
+        nickname,
+      }, res => {
+        if (!res?.ok) {
+          if (errEl) errEl.textContent = res?.error || t('err_create_failed');
+          btn.disabled = false; btn.textContent = t('transfer_btn');
+          return;
+        }
+        currentToken    = res.token;
+        currentVideoId  = videoId;
+        currentPlatform = platform;
+        isActiveTab = true; isInRoom = true; isHost = true;
+        panelVisible = false; panel.style.display = 'none';
+        updateBubble();
+      });
+    });
+  });
+}
+
 function renderHostPanel() {
   const memberCount = currentMembers.length;
   const inviteLink = currentVideoId && currentPlatform
@@ -496,8 +553,15 @@ function renderHostPanel() {
       </div>
     </div>
 
+    ${currentVideoId ? `<button class="wt-btn blue" id="wt-sync-all-btn" style="margin-bottom:4px;">${t('sync_all_btn')}</button>` : ''}
     <button class="wt-btn danger" id="wt-leave-btn">${t('leave_room')}</button>
   `;
+
+  panel.querySelector('#wt-sync-all-btn')?.addEventListener('click', () => {
+    const btn = panel.querySelector('#wt-sync-all-btn');
+    chrome.runtime.sendMessage({ type: 'sync_all' });
+    if (btn) { btn.disabled = true; setTimeout(() => { btn.disabled = false; }, 3000); }
+  });
 
   panel.querySelector('#wt-pc-close')?.addEventListener('click', () => { panelVisible = false; panel.style.display = 'none'; });
 
@@ -692,7 +756,7 @@ function showVetoBanner(senderName, action, seconds) {
   }, 1000);
 }
 
-function showSwitchBanner(hostName, videoId, platform) {
+function showSwitchBanner(hostName, videoId, platform, autoLeave = true) {
   const b = getBanners();
   if (!b) return;
   clearInterval(switchTimerId); switchTimerId = null;
@@ -740,15 +804,72 @@ function showSwitchBanner(hostName, videoId, platform) {
     if (remaining <= 0) {
       clearInterval(switchTimerId); switchTimerId = null;
       switchBanner?.remove(); switchBanner = null;
-      // 超时未选择 → 自动退出房间
-      chrome.runtime.sendMessage({ type: 'leave_room' });
-      isInRoom = false; isHost = false; currentMembers = [];
-      updateBubble();
-      showInfo(t('banner_auto_left'), 4000);
+      if (autoLeave) {
+        // 超时未选择 → 自动退出房间
+        chrome.runtime.sendMessage({ type: 'leave_room' });
+        isInRoom = false; isHost = false; currentMembers = [];
+        updateBubble();
+        showInfo(t('banner_auto_left'), 4000);
+      }
     } else {
       render();
     }
   }, 1000);
+}
+
+function showTransferBanner(newToken, hostName, newVideoId, newPlatform, title) {
+  const b = getBanners();
+  if (!b) return;
+  const el = document.createElement('div');
+  el.className = 'wt-banner switch';
+  el.innerHTML = `
+    <span class="wt-banner-text">${t('banner_transfer_text', { name: escHtml(hostName || '?') })}</span>
+    <button class="wt-bBtn ok" id="wt-tf-follow">${t('banner_transfer_follow')}</button>
+    <button class="wt-bBtn danger" id="wt-tf-leave">${t('banner_transfer_leave')}</button>
+  `;
+  b.appendChild(el);
+
+  const dismiss = () => el.remove();
+
+  el.querySelector('#wt-tf-follow')?.addEventListener('click', () => {
+    dismiss();
+    chrome.runtime.sendMessage({ type: 'get_nickname' }, r => {
+      const nickname = r?.nickname || '';
+      chrome.runtime.sendMessage({ type: 'api_join_room', token: newToken, nickname }, res => {
+        if (!res?.ok) { showInfo(res?.error || t('panel_err_failed'), 3000); return; }
+        const info = res.data;
+        chrome.runtime.sendMessage({
+          type:          'connect_room',
+          roomId:        info.room_id,
+          isHost:        false,
+          hostName:      info.host_name,
+          videoId:       info.video_id,
+          platform:      info.platform,
+          nickname,
+          hostSearching: info.host_searching || false,
+          tabId:         null,
+          joinToken:     newToken,
+          title:         info.title || title || '',
+        });
+        isInRoom = true; isHost = false; isActiveTab = true;
+        currentHostName = info.host_name;
+        updateBubble();
+        if (info.video_id && !info.host_searching) {
+          const url = info.platform === 'youtube'
+            ? `https://www.youtube.com/watch?v=${info.video_id}`
+            : `https://www.bilibili.com/video/${info.video_id}/`;
+          if (!location.href.includes(info.video_id)) location.href = url;
+        }
+      });
+    });
+  });
+
+  el.querySelector('#wt-tf-leave')?.addEventListener('click', () => {
+    dismiss();
+    showInfo(t('info_left_room'), 3000);
+  });
+
+  setTimeout(dismiss, 30000);
 }
 
 function showLostBanner(hostName) {
@@ -773,22 +894,11 @@ function showNonActiveBanner(role) {
   const el = document.createElement('div');
   el.id = 'wt-nonactive-banner';
   el.className = 'wt-banner info';
-  const moveBtn = role === 'host' ? `<button class="wt-bBtn" id="wt-move-here">${t('banner_move_here')}</button>` : '';
   el.innerHTML = `
     <span class="wt-banner-text">${role === 'host' ? t('banner_non_active_host') : t('banner_non_active_guest')}</span>
-    ${moveBtn}
     <button class="wt-bBtn" id="wt-nonactive-ok">${t('close')}</button>
   `;
   b.appendChild(el);
-  el.querySelector('#wt-move-here')?.addEventListener('click', () => {
-    chrome.runtime.sendMessage({ type: 'move_active_tab' }, res => {
-      if (res?.ok) {
-        el.remove();
-        isActiveTab = true;
-        syncStateFromBackground();
-      }
-    });
-  });
   el.querySelector('#wt-nonactive-ok')?.addEventListener('click', () => el.remove());
   setTimeout(() => el.remove(), 12000);
 }
@@ -1024,7 +1134,21 @@ chrome.runtime.onMessage.addListener((msg) => {
 
     case 'host_switched':
       if (!isInRoom || isHost || !isActiveTab) break;
-      showSwitchBanner(msg.hostName, msg.videoId, msg.platform);
+      hostSearching = false;
+      showSwitchBanner(msg.hostName, msg.videoId, msg.platform, !msg.syncAll);
+      break;
+
+    case 'host_transferred':
+      if (!isInRoom || isHost) break;
+      // 清除旧房间状态，显示跟随横幅
+      isInRoom = false; isHost = false; isActiveTab = false;
+      hostSearching = false; currentMembers = []; currentToken = '';
+      clearInterval(positionTimer); positionTimer = null;
+      clearInterval(vetoTimerId); vetoTimerId = null; vetoBanner?.remove(); vetoBanner = null;
+      clearInterval(switchTimerId); switchTimerId = null; switchBanner?.remove(); switchBanner = null;
+      panelVisible = false; if (panel) panel.style.display = 'none';
+      updateBubble();
+      showTransferBanner(msg.newToken, msg.hostName, msg.newVideoId, msg.newPlatform, msg.title);
       break;
 
     case 'host_searching':

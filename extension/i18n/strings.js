@@ -167,6 +167,18 @@ const WT_STRINGS = {
     about_github_val: '(coming soon)',
     about_license: 'License',
 
+    // ── 同步所有人 ────────────────────────────────
+    sync_all_btn: 'Sync All',
+
+    // ── 房间转移 ──────────────────────────────────
+    transfer_already_host: "You're hosting a room in another tab.",
+    transfer_btn: 'Transfer Room Here',
+    transfer_btn_loading: 'Transferring...',
+    transfer_no_video: 'Open a video page first',
+    banner_transfer_text: 'Host {name} moved to a new room',
+    banner_transfer_follow: 'Follow',
+    banner_transfer_leave: 'Leave',
+
     // ── 历史房间 ──────────────────────────────────
     history_title: 'Recent Rooms',
     history_join_btn: 'Rejoin',
@@ -344,6 +356,18 @@ const WT_STRINGS = {
     about_github_val: '（即将发布）',
     about_license: '许可证',
 
+    // ── 同步所有人 ────────────────────────────────
+    sync_all_btn: '同步所有人',
+
+    // ── 房间转移 ──────────────────────────────────
+    transfer_already_host: '你已在另一个标签页中创建了房间。',
+    transfer_btn: '将房间转移到此处',
+    transfer_btn_loading: '转移中...',
+    transfer_no_video: '请先打开一个视频',
+    banner_transfer_text: '房主 {name} 已转移到新房间',
+    banner_transfer_follow: '跟随',
+    banner_transfer_leave: '离开',
+
     // ── 历史房间 ──────────────────────────────────
     history_title: '最近房间',
     history_join_btn: '重新加入',
@@ -520,6 +544,18 @@ const WT_STRINGS = {
     about_github: 'GitHub',
     about_github_val: '（近日公開）',
     about_license: 'ライセンス',
+
+    // ── 全員に同期 ────────────────────────────────
+    sync_all_btn: '全員に同期',
+
+    // ── ルーム転送 ────────────────────────────────
+    transfer_already_host: '別のタブでルームをホストしています。',
+    transfer_btn: 'ルームをここに転送',
+    transfer_btn_loading: '転送中...',
+    transfer_no_video: 'まず動画ページを開いてください',
+    banner_transfer_text: 'ホスト {name} が新しいルームに移動しました',
+    banner_transfer_follow: '追う',
+    banner_transfer_leave: '離脱',
 
     // ── 履歴ルーム ────────────────────────────────
     history_title: '最近のルーム',

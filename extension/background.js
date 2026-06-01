@@ -10,6 +10,7 @@ let currentRoom = null;
 let mySid = null;
 let activeTabId = null;
 let _cachedClientId = null;
+let _isTransferring = false; // 房主转移房间时，抑制 room_lost 给房客的广播
 
 // ── 首次安装初始化 ─────────────────────────────────
 chrome.runtime.onInstalled.addListener(async (details) => {
@@ -136,6 +137,12 @@ async function connectWS(roomId, name) {
       return;
     }
     if (!currentRoom) return;
+    if (_isTransferring) {
+      // 房间转移完成，静默退出旧房间
+      _isTransferring = false;
+      currentRoom = null; mySid = null; activeTabId = null;
+      return;
+    }
 
     if (reconnectAttempts < MAX_RECONNECT) {
       reconnectAttempts++;
@@ -251,7 +258,7 @@ function handleServerMessage(msg) {
         currentRoom.platform = msg.platform;
         currentRoom.hostSearching = false;
       }
-      sendToActiveTab({ type: 'host_switched', videoId: msg.video_id, platform: msg.platform, isLive: msg.is_live, hostName: msg.host_name });
+      sendToActiveTab({ type: 'host_switched', videoId: msg.video_id, platform: msg.platform, isLive: msg.is_live, hostName: msg.host_name, syncAll: msg.sync_all || false });
       break;
 
     case 'host_searching':
@@ -269,9 +276,34 @@ function handleServerMessage(msg) {
       _broadcastToAllVideoTabs({ type: 'host_reconnected', hostName: msg.host_name });
       break;
 
+    case 'host_transferred':
+      // 房主转移：抑制后续 room_lost，预存历史，通知 content.js 显示跟随横幅
+      _isTransferring = true;
+      if (msg.new_token) {
+        addToJoinHistory({
+          token:    msg.new_token,
+          hostName: msg.host_name || '',
+          platform: msg.platform || '',
+          videoId:  msg.video_id || '',
+          title:    msg.title || '',
+        });
+      }
+      sendToActiveTab({
+        type: 'host_transferred',
+        newToken:    msg.new_token,
+        newVideoId:  msg.video_id,
+        newPlatform: msg.platform,
+        title:       msg.title || '',
+        hostName:    msg.host_name || '',
+      });
+      break;
+
     case 'room_lost':
-      sendToActiveTab({ type: 'room_lost', hostName: msg.host_name });
-      _broadcastToAllVideoTabs({ type: 'room_dissolved', hostName: msg.host_name });
+      if (!_isTransferring) {
+        sendToActiveTab({ type: 'room_lost', hostName: msg.host_name });
+        _broadcastToAllVideoTabs({ type: 'room_dissolved', hostName: msg.host_name });
+      }
+      _isTransferring = false;
       currentRoom = null; mySid = null; activeTabId = null;
       break;
 
@@ -474,6 +506,93 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       })();
       return true; // async
 
+    case 'transfer_room':
+      (async () => {
+        try {
+          const [s, clientId] = await Promise.all([getSettings(), getClientId()]);
+
+          // 1. 创建新房间
+          const res = await fetch(`${s.serverUrl}/wt/room/create`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              host_name:    msg.nickname,
+              client_id:    clientId,
+              video_id:     msg.videoId || '',
+              platform:     msg.platform || '',
+              title:        msg.title || '',
+              current_time: msg.currentTime || 0,
+              paused:       msg.paused !== false,
+              is_live:      msg.isLive || false,
+            }),
+          });
+          if (!res.ok) {
+            const e = await res.json().catch(() => ({}));
+            sendResponse({ ok: false, error: e.error || '创建失败' });
+            return;
+          }
+          const data = await res.json();
+
+          // 2. 通知旧 active tab 清除状态
+          const oldTabId = activeTabId;
+          const newTabId = sender.tab?.id || null;
+          if (oldTabId && oldTabId !== newTabId) {
+            chrome.tabs.sendMessage(oldTabId, { type: 'self_left_room' }).catch(() => {});
+          }
+
+          // 3. 在旧 WS 上广播转移消息
+          if (ws && ws.readyState === WebSocket.OPEN) {
+            ws.send(JSON.stringify({
+              type:      'host_transferred',
+              new_token: data.token,
+              video_id:  msg.videoId || '',
+              platform:  msg.platform || '',
+              title:     msg.title || '',
+            }));
+          }
+
+          // 4. 等待消息发出后断开旧连接
+          await new Promise(r => setTimeout(r, 200));
+          if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null; }
+          reconnectAttempts = MAX_RECONNECT;
+          if (ws) {
+            ws.onclose = null;
+            try { ws.send(JSON.stringify({ type: 'leave' })); } catch (_) {}
+            ws.close(4000, 'user left');
+            ws = null;
+          }
+          mySid = null;
+
+          // 5. 建立新房间
+          activeTabId = newTabId;
+          currentRoom = {
+            roomId:             data.room_id,
+            token:              data.token,
+            isHost:             true,
+            hostName:           null,
+            videoId:            msg.videoId || null,
+            platform:           msg.platform || null,
+            vetoEnabled:        false,
+            vetoSeconds:        5,
+            guestControlAllowed: false,
+            members:            [],
+            hostSearching:      false,
+            _wasReconnecting:   false,
+          };
+          reconnectAttempts = 0;
+          connectWS(data.room_id, msg.nickname);
+
+          sendResponse({ ok: true, token: data.token, roomId: data.room_id });
+        } catch (e) {
+          sendResponse({ ok: false, error: e.message || '网络错误' });
+        }
+      })();
+      return true;
+
+    case 'sync_all':
+      wsSend({ type: 'sync_all' });
+      break;
+
     case 'api_check_room':
       (async () => {
         try {
@@ -510,6 +629,19 @@ chrome.tabs.onRemoved.addListener((tabId) => {
   if (tabId === activeTabId && currentRoom) {
     console.log('[WT] Active tab closed, leaving room');
     disconnectWS();
+    _broadcastToAllVideoTabs({ type: 'self_left_room' });
+  }
+});
+
+// ── Tab 导航：房主离开视频平台则解散房间 ──────────
+chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
+  if (tabId !== activeTabId || !currentRoom || changeInfo.status !== 'complete') return;
+  const url = tab.url || '';
+  if (!url || url.startsWith('about:') || url.startsWith('chrome:')) return;
+  if (!url.includes('youtube.com') && !url.includes('bilibili.com')) {
+    console.log('[WT] Host left video platform, dissolving room');
+    disconnectWS();
+    _broadcastToAllVideoTabs({ type: 'self_left_room' });
   }
 });
 
