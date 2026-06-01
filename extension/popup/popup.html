@@ -1,0 +1,111 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>WatchTogether</title>
+<link rel="stylesheet" href="popup.css">
+</head>
+<body>
+
+<div class="header">
+  <span class="logo">▶ WatchTogether</span>
+  <a href="../settings/settings.html" target="_blank" class="settings-btn" title="Settings">⚙</a>
+</div>
+
+<!-- 首次引导 -->
+<div id="view-firstrun" class="view" style="display:none">
+  <div class="firstrun-icon">👋</div>
+  <div class="firstrun-title" data-i18n="firstrun_title">Welcome to WatchTogether</div>
+  <div class="firstrun-desc" data-i18n="firstrun_desc">Set a nickname to get started</div>
+  <input type="text" id="firstrun-nick" data-i18n="firstrun_nick_placeholder" placeholder="Your nickname" maxlength="20" autocomplete="off">
+  <button class="btn btn-primary" id="btn-firstrun-save" data-i18n="firstrun_save">Get Started</button>
+  <div class="error-msg" id="firstrun-err"></div>
+</div>
+
+<!-- 未在房间 -->
+<div id="view-idle" class="view" style="display:none">
+  <div class="video-info">
+    <div class="video-title" id="video-title">—</div>
+    <div class="video-meta" id="video-meta"></div>
+  </div>
+  <button class="btn btn-primary" id="btn-create" data-i18n="create_room">Create Room</button>
+  <div class="divider" data-i18n="or">or</div>
+  <div class="join-row">
+    <input type="text" id="input-token" data-i18n="join_placeholder" placeholder="Enter invite code" maxlength="8" autocomplete="off">
+    <button class="btn btn-secondary" id="btn-join" data-i18n="join_btn">Join</button>
+  </div>
+  <div class="error-msg" id="error-msg"></div>
+</div>
+
+<!-- 在房间中 -->
+<div id="view-room" class="view" style="display:none">
+  <div class="room-status">
+    <div class="status-dot" id="status-dot"></div>
+    <span id="status-text" data-i18n="status_syncing">Syncing</span>
+  </div>
+
+  <!-- 房主面板 -->
+  <div id="host-panel" style="display:none">
+    <div class="token-box">
+      <span class="token-label" data-i18n="invite_code_label">Invite Code</span>
+      <span class="token-value" id="token-display">—</span>
+      <button class="btn-copy" id="btn-copy-token" data-i18n="copy">Copy</button>
+    </div>
+    <div class="link-box">
+      <span class="token-label" data-i18n="invite_link_label">Invite Link</span>
+      <span class="link-value" id="link-display">—</span>
+      <button class="btn-copy" id="btn-copy-link" data-i18n="copy">Copy</button>
+    </div>
+
+    <div class="member-section">
+      <div class="member-header">
+        <span class="member-title" data-i18n="members_title">Members</span>
+        <span class="member-count" id="member-count">1/5</span>
+      </div>
+      <div class="member-list" id="member-list"></div>
+    </div>
+
+    <div class="settings-group">
+      <div class="setting-row">
+        <label class="toggle-label">
+          <span data-i18n="veto_label">Veto Protection</span>
+          <input type="checkbox" id="toggle-veto">
+          <span class="toggle-switch"></span>
+        </label>
+        <div class="veto-seconds" id="veto-seconds-row" style="display:none">
+          <span data-i18n="veto_seconds_pre">Countdown</span>
+          <input type="number" id="input-veto-seconds" value="5" min="3" max="30">
+          <span data-i18n="veto_seconds_post">seconds</span>
+        </div>
+      </div>
+      <div class="setting-row">
+        <label class="toggle-label">
+          <span data-i18n="guest_control_label">Allow guest control</span>
+          <input type="checkbox" id="toggle-guest-control">
+          <span class="toggle-switch"></span>
+        </label>
+      </div>
+      <div class="setting-hint" data-i18n="guest_control_hint">Guest actions sync to everyone</div>
+    </div>
+  </div>
+
+  <!-- 房客面板 -->
+  <div id="guest-panel" style="display:none">
+    <div class="host-name"><span data-i18n="host_name_prefix">Host:</span> <span id="host-name-display">—</span></div>
+    <div class="member-section">
+      <div class="member-header">
+        <span class="member-title" data-i18n="members_title">Members</span>
+        <span class="member-count" id="guest-member-count">—/5</span>
+      </div>
+      <div class="member-list" id="guest-member-list"></div>
+    </div>
+    <button class="btn btn-sm" id="btn-catch-up" data-i18n="catch_up_btn">🏃 Catch Up</button>
+  </div>
+
+  <button class="btn btn-danger" id="btn-leave" data-i18n="leave_btn">Leave Room</button>
+</div>
+
+<script src="../i18n/strings.js"></script>
+<script src="popup.js"></script>
+</body>
+</html>

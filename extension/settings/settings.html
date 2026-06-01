@@ -1,0 +1,139 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>WatchTogether — Settings</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0;}
+body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;font-size:14px;color:#1a1a1a;background:#f5f5f5;min-height:100vh;display:flex;align-items:flex-start;justify-content:center;padding:40px 16px;}
+.card{background:#fff;border-radius:12px;padding:28px;width:100%;max-width:440px;box-shadow:0 2px 12px rgba(0,0,0,.08);}
+h1{font-size:18px;font-weight:600;margin-bottom:24px;color:#111;}
+.field{margin-bottom:20px;}
+label{display:block;font-size:13px;font-weight:500;color:#444;margin-bottom:6px;}
+.hint{font-size:12px;color:#888;margin-top:4px;}
+input[type=text],select{width:100%;padding:9px 12px;border:1px solid #ddd;border-radius:8px;font-size:14px;outline:none;transition:border-color .15s;background:#fff;}
+input[type=text]:focus,select:focus{border-color:#ff4e4e;}
+.inline-row{display:flex;gap:8px;align-items:center;}
+.inline-row input,.inline-row select{flex:1;margin:0;}
+.test-btn{padding:9px 14px;background:#f0f0f0;border:none;border-radius:8px;font-size:13px;cursor:pointer;white-space:nowrap;transition:background .15s;}
+.test-btn:hover{background:#e0e0e0;}
+.toggle-row{display:flex;align-items:center;justify-content:space-between;padding:10px 0;border-bottom:1px solid #f0f0f0;}
+.toggle-row:last-of-type{border-bottom:none;}
+.toggle-row label{margin-bottom:0;font-weight:400;}
+.toggle-wrap{position:relative;width:38px;height:22px;flex-shrink:0;}
+.toggle-wrap input{opacity:0;width:0;height:0;position:absolute;}
+.toggle-slider{position:absolute;top:0;left:0;right:0;bottom:0;background:#ddd;border-radius:11px;transition:background .2s;cursor:pointer;}
+.toggle-slider::after{content:'';position:absolute;width:18px;height:18px;background:#fff;border-radius:50%;top:2px;left:2px;transition:transform .2s;box-shadow:0 1px 3px rgba(0,0,0,.2);}
+input:checked+.toggle-slider{background:#ff4e4e;}
+input:checked+.toggle-slider::after{transform:translateX(16px);}
+.client-id{font-family:monospace;font-size:11px;color:#999;background:#f8f8f8;padding:6px 10px;border-radius:6px;word-break:break-all;margin-top:4px;}
+.btn-save{width:100%;padding:10px;background:#ff4e4e;color:#fff;border:none;border-radius:8px;font-size:14px;font-weight:500;cursor:pointer;margin-top:4px;}
+.btn-save:hover{opacity:.88;}
+.saved-msg{text-align:center;color:#4caf50;font-size:13px;margin-top:10px;min-height:20px;}
+.reset-btn{background:none;border:none;color:#999;font-size:12px;cursor:pointer;padding:0;display:block;margin:16px auto 0;}
+.reset-btn:hover{color:#666;text-decoration:underline;}
+.section-title{font-size:13px;font-weight:600;color:#666;margin:20px 0 12px;padding-bottom:6px;border-bottom:1px solid #eee;}
+.label-row{display:flex;align-items:center;gap:6px;margin-bottom:6px;}
+.label-row label{margin-bottom:0;}
+.help-icon-btn{background:none;border:none;font-size:13px;cursor:pointer;padding:0 2px;color:#aaa;line-height:1;vertical-align:middle;}
+.help-icon-btn:hover{color:#ff4e4e;}
+.help-box{background:#f8f8f8;border:1px solid #e8e8e8;border-radius:8px;padding:10px 12px;margin-bottom:10px;font-size:12px;color:#555;line-height:1.6;}
+.help-box strong{display:block;margin-bottom:4px;color:#333;font-size:12px;}
+.help-box a{color:#ff4e4e;text-decoration:none;}
+.help-box a:hover{text-decoration:underline;}
+.help-box .disabled{color:#aaa;pointer-events:none;}
+.about-toggle{cursor:pointer;user-select:none;display:flex;align-items:center;justify-content:space-between;}
+.about-toggle::after{content:'▸';font-size:11px;color:#bbb;transition:transform .2s;}
+.about-toggle.open::after{content:'▾';}
+.about-body{margin-top:4px;margin-bottom:8px;}
+.about-row{display:flex;align-items:center;justify-content:space-between;padding:6px 0;border-bottom:1px solid #f5f5f5;font-size:13px;}
+.about-row:last-child{border-bottom:none;}
+.about-key{color:#888;font-size:12px;flex-shrink:0;margin-right:12px;}
+.about-val{color:#333;text-align:right;}
+.about-link{color:#ff4e4e;text-decoration:none;text-align:right;}
+.about-link:hover{text-decoration:underline;}
+.about-link.disabled{color:#aaa;pointer-events:none;}
+</style>
+</head>
+<body>
+<div class="card">
+  <h1 id="settings-h1" data-i18n="settings_title">⚙ Settings</h1>
+
+  <div class="field">
+    <label for="nickname" data-i18n="nickname_label">Nickname</label>
+    <input type="text" id="nickname" data-i18n="nickname_placeholder" placeholder="Leave blank to auto-generate" maxlength="20">
+    <div class="hint" data-i18n="nickname_hint">Name shown to others in room (1–20 chars)</div>
+  </div>
+
+  <div class="field">
+    <div class="label-row">
+      <label for="server-url" data-i18n="server_url_label">Server URL</label>
+      <button id="btn-selfhost-help" class="help-icon-btn" type="button">❓</button>
+    </div>
+    <div id="selfhost-help-box" class="help-box" style="display:none">
+      <strong data-i18n="selfhost_help_title">Self-Hosting</strong>
+      <span data-i18n="selfhost_help_body">You can run your own relay server using the open-source backend. Visit the GitHub repository for step-by-step deployment instructions.</span>
+      <div style="margin-top:6px;">
+        <span data-i18n="selfhost_repo_label">Repository:</span>
+        <a id="selfhost-repo-link" class="disabled" href="#" target="_blank" data-i18n="selfhost_repo_val">(coming soon)</a>
+      </div>
+    </div>
+    <div class="inline-row">
+      <input type="text" id="server-url" data-i18n="server_url_placeholder" placeholder="https://your-server.com">
+      <button id="btn-test" class="test-btn" data-i18n="test_btn">Test</button>
+    </div>
+    <div class="hint" id="server-test-result" data-i18n="server_url_hint">Leave blank to use the official server</div>
+  </div>
+
+  <div class="field">
+    <label for="lang-select" data-i18n="language_label">Language</label>
+    <select id="lang-select">
+      <option value="en">English</option>
+      <option value="zh">中文</option>
+      <option value="ja">日本語</option>
+    </select>
+  </div>
+
+  <div class="section-title" data-i18n="ui_section">Interface</div>
+  <div class="toggle-row">
+    <label data-i18n="show_bubble_label">Show floating button</label>
+    <div class="toggle-wrap">
+      <input type="checkbox" id="toggle-bubble">
+      <div class="toggle-slider"></div>
+    </div>
+  </div>
+  <div class="hint" style="margin-top:4px;margin-bottom:16px;" data-i18n="show_bubble_hint">Shows the sync entry button on video pages</div>
+
+  <div class="section-title about-toggle" id="about-toggle" data-i18n="about_section">About</div>
+  <div id="about-body" class="about-body" style="display:none">
+    <div class="about-row">
+      <span class="about-key" data-i18n="about_version">Version</span>
+      <span class="about-val">1.1.0</span>
+    </div>
+    <div class="about-row">
+      <span class="about-key" data-i18n="about_author">Author</span>
+      <span class="about-val" data-i18n="about_author_val">—</span>
+    </div>
+    <div class="about-row">
+      <span class="about-key" data-i18n="about_github">GitHub</span>
+      <a id="about-github-link" class="about-link disabled" href="#" target="_blank" data-i18n="about_github_val">(coming soon)</a>
+    </div>
+    <div class="about-row">
+      <span class="about-key" data-i18n="about_license">License</span>
+      <span class="about-val">MIT</span>
+    </div>
+    <div class="about-row">
+      <span class="about-key" data-i18n="client_id_label">Device ID</span>
+      <span class="client-id about-val" id="client-id-display" style="font-size:11px;max-width:220px;overflow-wrap:break-word;text-align:right;">Loading...</span>
+    </div>
+    <div class="hint" style="margin-top:2px;" data-i18n="client_id_hint">Identifies this browser, not shown to others</div>
+  </div>
+
+  <button class="btn-save" id="btn-save" data-i18n="save_settings">Save Settings</button>
+  <div class="saved-msg" id="saved-msg"></div>
+  <button class="reset-btn" id="btn-reset" data-i18n="reset_settings">Reset to defaults</button>
+</div>
+<script src="../i18n/strings.js"></script>
+<script src="settings.js"></script>
+</body>
+</html>

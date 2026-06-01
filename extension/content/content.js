@@ -1,0 +1,1051 @@
+// content.js
+const isYouTube = location.hostname.includes('youtube.com');
+const isBilibili = location.hostname.includes('bilibili.com');
+let adapter = isYouTube ? new YouTubeAdapter() : isBilibili ? new BilibiliAdapter() : null;
+
+// ── 状态 ──────────────────────────────────────────
+let isInRoom = false;
+let isHost = false;
+let isActiveTab = false;
+let hostSearching = false;    // 房主正在找视频
+let suppressEvents = false;
+let currentMembers = [];
+let currentHostName = '';
+let currentToken = '';
+let currentVideoId = '';
+let currentPlatform = '';
+
+// ── UI 元素引用 ───────────────────────────────────
+let shadowHost = null;
+let shadowRoot = null;
+let bubble = null;
+let panel = null;
+let panelVisible = false;
+let bubbleHidden = false;  // 当次隐藏状态（不保存）
+
+// banner 引用
+let vetoBanner = null, vetoTimerId = null;
+let switchBanner = null, switchTimerId = null;
+let infoBanner = null, infoTimerId = null;
+
+// ── Shadow DOM 初始化 ─────────────────────────────
+function initOverlay() {
+  shadowHost = document.createElement('div');
+  shadowHost.id = '__wt_host__';
+  shadowHost.style.cssText = 'all:initial;position:fixed;top:0;left:0;width:0;height:0;z-index:2147483647;pointer-events:none;';
+  document.documentElement.appendChild(shadowHost);
+  shadowRoot = shadowHost.attachShadow({ mode: 'open' });
+
+  const style = document.createElement('style');
+  style.textContent = getStyles();
+  shadowRoot.appendChild(style);
+
+  createBubble();
+  createPanel();
+  createBannerContainer();
+}
+
+function getStyles() {
+  return `
+    *{box-sizing:border-box;margin:0;padding:0;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;}
+
+    /* ── 悬浮圆圈 ── */
+    .wt-bubble{
+      position:fixed;right:0;top:50%;transform:translateY(-50%);
+      width:48px;height:48px;border-radius:50% 0 0 50%;
+      background:#9e9e9e;cursor:pointer;pointer-events:auto;
+      display:flex;flex-direction:column;align-items:center;justify-content:center;gap:2px;
+      box-shadow:-2px 0 10px rgba(0,0,0,.3);transition:background .3s,width .2s;
+      user-select:none;
+    }
+    .wt-bubble.in-room{background:#4caf50;}
+    .wt-bubble.reconnecting{background:#ff9800;animation:wt-pulse .8s infinite alternate;}
+    .wt-bubble.host-searching{background:#2196f3;}
+    .wt-bubble-icon{font-size:18px;line-height:1;color:#fff;}
+    .wt-bubble-label{font-size:9px;color:rgba(255,255,255,.85);line-height:1;text-align:center;max-width:44px;overflow:hidden;white-space:nowrap;}
+    .wt-bubble-close{
+      position:absolute;top:-5px;right:-5px;width:16px;height:16px;
+      background:rgba(0,0,0,.55);color:#fff;border:none;border-radius:50%;
+      font-size:11px;line-height:16px;text-align:center;cursor:pointer;
+      display:none;pointer-events:auto;
+    }
+    .wt-bubble:hover .wt-bubble-close{display:block;}
+    @keyframes wt-pulse{to{opacity:.5;}}
+
+    /* ── 面板 ── */
+    .wt-panel{
+      position:fixed;right:52px;top:50%;transform:translateY(-50%);
+      background:#1e1e1e;color:#f0f0f0;border-radius:12px;
+      width:240px;padding:14px;pointer-events:auto;
+      box-shadow:-4px 0 20px rgba(0,0,0,.5);
+      max-height:80vh;overflow-y:auto;
+    }
+    .wt-panel-title{font-size:13px;font-weight:600;color:#fff;margin-bottom:10px;display:flex;justify-content:space-between;align-items:center;}
+    .wt-panel-close{background:none;border:none;color:#888;font-size:16px;cursor:pointer;padding:0 2px;line-height:1;}
+    .wt-panel-close:hover{color:#ccc;}
+    .wt-section{margin-bottom:10px;}
+    .wt-section-label{font-size:11px;color:#888;margin-bottom:4px;}
+    .wt-code-row{display:flex;align-items:center;gap:6px;background:#2a2a2a;border-radius:6px;padding:6px 8px;}
+    .wt-code-val{flex:1;font-family:monospace;font-size:15px;font-weight:700;letter-spacing:2px;color:#fff;}
+    .wt-copy-btn{background:none;border:1px solid #555;color:#ccc;border-radius:5px;padding:2px 7px;font-size:11px;cursor:pointer;}
+    .wt-copy-btn:hover{background:#333;}
+    .wt-link-row{display:flex;align-items:center;gap:6px;background:#2a2a2a;border-radius:6px;padding:6px 8px;}
+    .wt-link-val{flex:1;font-size:11px;color:#aaa;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+    .wt-members{margin-bottom:8px;}
+    .wt-member-header{font-size:11px;color:#888;margin-bottom:4px;}
+    .wt-member-item{display:flex;align-items:center;gap:6px;padding:3px 0;font-size:12px;color:#ddd;}
+    .wt-member-dot{width:6px;height:6px;border-radius:50%;background:#4caf50;flex-shrink:0;}
+    .wt-member-dot.host{background:#ff9800;}
+    .wt-btn{width:100%;padding:7px;border:none;border-radius:7px;font-size:13px;font-weight:500;cursor:pointer;margin-top:6px;transition:opacity .15s;}
+    .wt-btn:hover{opacity:.85;}
+    .wt-btn.primary{background:#4caf50;color:#fff;}
+    .wt-btn.danger{background:#b71c1c;color:#fff;}
+    .wt-btn.secondary{background:#333;color:#ddd;}
+    .wt-btn.blue{background:#1565c0;color:#fff;}
+    .wt-input{width:100%;padding:7px 9px;border:1px solid #444;border-radius:6px;background:#111;color:#fff;font-size:13px;margin-top:4px;}
+    .wt-input:focus{outline:none;border-color:#4caf50;}
+    .wt-input::placeholder{color:#666;}
+    .wt-status-row{font-size:12px;color:#aaa;margin-bottom:6px;display:flex;align-items:center;gap:6px;}
+    .wt-dot{width:8px;height:8px;border-radius:50%;flex-shrink:0;}
+    .wt-dot.green{background:#4caf50;}
+    .wt-dot.orange{background:#ff9800;animation:wt-pulse .8s infinite alternate;}
+    .wt-dot.blue{background:#2196f3;animation:wt-pulse .8s infinite alternate;}
+    .wt-dot.gray{background:#9e9e9e;}
+    .wt-info{font-size:11px;color:#888;margin-top:6px;line-height:1.5;}
+    .wt-toggle-row{display:flex;align-items:center;justify-content:space-between;padding:6px 0;border-bottom:1px solid #2a2a2a;font-size:12px;color:#ccc;}
+    .wt-toggle-row:last-child{border-bottom:none;}
+    .wt-toggle-wrap{position:relative;width:34px;height:18px;flex-shrink:0;}
+    .wt-toggle-wrap input{opacity:0;width:0;height:0;position:absolute;}
+    .wt-toggle-slider{position:absolute;top:0;left:0;right:0;bottom:0;background:#444;border-radius:9px;cursor:pointer;transition:background .2s;}
+    .wt-toggle-slider::after{content:'';position:absolute;width:14px;height:14px;background:#fff;border-radius:50%;top:2px;left:2px;transition:transform .2s;}
+    .wt-toggle-wrap input:checked+.wt-toggle-slider{background:#4caf50;}
+    .wt-toggle-wrap input:checked+.wt-toggle-slider::after{transform:translateX(16px);}
+    .wt-subsection{background:#1a1a1a;border-radius:6px;padding:6px 8px;margin-bottom:8px;}
+    .wt-num-input{background:#111;border:1px solid #444;color:#fff;border-radius:4px;padding:2px 5px;font-size:12px;width:40px;}
+
+    /* ── 通知 banner ── */
+    .wt-banners{position:fixed;top:64px;left:50%;transform:translateX(-50%);display:flex;flex-direction:column;gap:8px;pointer-events:auto;min-width:320px;max-width:500px;z-index:1;}
+    .wt-banner{
+      background:rgba(22,22,22,.95);color:#fff;font-size:13px;
+      padding:10px 16px;border-radius:10px;display:flex;align-items:center;gap:10px;
+      backdrop-filter:blur(6px);white-space:nowrap;box-shadow:0 4px 20px rgba(0,0,0,.5);
+    }
+    .wt-banner.veto{border-left:3px solid #ff9800;}
+    .wt-banner.switch{border-left:3px solid #2196f3;}
+    .wt-banner.lost{border-left:3px solid #f44336;background:rgba(80,0,0,.95);}
+    .wt-banner.info{border-left:3px solid #4caf50;}
+    .wt-banner.warn{border-left:3px solid #ff9800;}
+    .wt-cd{font-weight:700;color:#ff9800;min-width:26px;text-align:center;}
+    .wt-banner-text{flex:1;}
+    .wt-bbtn{background:rgba(255,255,255,.12);border:1px solid rgba(255,255,255,.3);color:#fff;padding:4px 10px;border-radius:5px;cursor:pointer;font-size:12px;white-space:nowrap;}
+    .wt-bBtn:hover{background:rgba(255,255,255,.22);}
+    .wt-bBtn.ok{background:#4caf50;border-color:#4caf50;}
+    .wt-bBtn.danger{border-color:#f44336;color:#ff6b6b;}
+  `;
+}
+
+function createBubble() {
+  bubble = document.createElement('div');
+  bubble.className = 'wt-bubble';
+  bubble.innerHTML = `
+    <div class="wt-bubble-icon">▶</div>
+    <div class="wt-bubble-label">${t('bubble_sync')}</div>
+    <button class="wt-bubble-close" title="${t('bubble_close_title')}">×</button>
+  `;
+  bubble.style.display = 'none'; // 等待 showBubble 设置显示
+
+  bubble.addEventListener('click', (e) => {
+    if (e.target.classList.contains('wt-bubble-close')) {
+      hideBubbleForSession();
+      return;
+    }
+    togglePanel();
+  });
+  shadowRoot.appendChild(bubble);
+}
+
+function createPanel() {
+  panel = document.createElement('div');
+  panel.className = 'wt-panel';
+  panel.style.display = 'none';
+  shadowRoot.appendChild(panel);
+}
+
+function createBannerContainer() {
+  const container = document.createElement('div');
+  container.className = 'wt-banners';
+  container.id = 'wt-banners';
+  shadowRoot.appendChild(container);
+}
+
+function getBanners() { return shadowRoot.getElementById('wt-banners'); }
+
+// ── 悬浮圆圈状态 ──────────────────────────────────
+function updateBubble() {
+  if (!bubble) return;
+  chrome.storage.local.get({ showBubble: true }, ({ showBubble }) => {
+    if (!showBubble || bubbleHidden) {
+      bubble.style.display = 'none';
+      return;
+    }
+    bubble.style.display = 'flex';
+
+    const iconEl = bubble.querySelector('.wt-bubble-icon');
+    const labelEl = bubble.querySelector('.wt-bubble-label');
+
+    if (!isInRoom) {
+      bubble.className = 'wt-bubble';
+      iconEl.textContent = '▶';
+      labelEl.textContent = t('bubble_sync');
+    } else if (hostSearching && !isHost) {
+      bubble.className = 'wt-bubble host-searching';
+      iconEl.textContent = '🔍';
+      labelEl.textContent = t('bubble_searching');
+    } else {
+      bubble.className = 'wt-bubble in-room';
+      iconEl.textContent = isHost ? '👑' : '▶';
+      labelEl.textContent = isHost ? t('bubble_host') : t('bubble_syncing');
+    }
+  });
+}
+
+function setBubbleReconnecting() {
+  if (!bubble) return;
+  bubble.className = 'wt-bubble reconnecting';
+  bubble.querySelector('.wt-bubble-icon').textContent = '↻';
+  bubble.querySelector('.wt-bubble-label').textContent = t('bubble_reconnecting');
+}
+
+function hideBubbleForSession() {
+  bubbleHidden = true;
+  if (bubble) bubble.style.display = 'none';
+  if (panel) { panel.style.display = 'none'; panelVisible = false; }
+}
+
+// ── 面板 ──────────────────────────────────────────
+function togglePanel() {
+  panelVisible = !panelVisible;
+  panel.style.display = panelVisible ? '' : 'none';
+  if (panelVisible) renderPanel();
+}
+
+function renderPanel() {
+  if (!panel) return;
+  if (!isInRoom) {
+    renderIdlePanel();
+  } else if (isHost) {
+    renderHostPanel();
+  } else {
+    renderGuestPanel();
+  }
+}
+
+function renderIdlePanel() {
+  const hashCode = getHashCode();
+  const videoId = adapter?.getVideoId() || '';
+  const platform = adapter?.getPlatform() || '';
+  const hasVideo = !!videoId;
+
+  panel.innerHTML = `
+    <div class="wt-panel-title">
+      ${t('panel_idle_title')}
+      <button class="wt-panel-close" id="wt-pc-close">×</button>
+    </div>
+
+    ${hasVideo ? `
+    <div class="wt-section">
+      <button class="wt-btn primary" id="wt-create-btn">${t('panel_create_btn')}</button>
+      <div id="wt-create-err" style="font-size:11px;color:#f66;margin-top:4px;min-height:14px;"></div>
+    </div>
+    <div style="height:1px;background:#333;margin:2px 0 10px;"></div>
+    ` : `<div class="wt-info">${t('panel_no_create')}</div><div style="height:1px;background:#333;margin:8px 0;"></div>`}
+
+    <div class="wt-section">
+      <div class="wt-section-label">${t('panel_join_section')}</div>
+      <input class="wt-input" id="wt-code-input" placeholder="${t('panel_code_placeholder')}" maxlength="8"
+        value="${hashCode ? escHtml(hashCode) : ''}">
+      <input class="wt-input" id="wt-nick-input" placeholder="${t('panel_nick_placeholder')}" maxlength="20" style="margin-top:6px">
+      <button class="wt-btn secondary" id="wt-do-join-btn" style="margin-top:6px">${t('panel_join_btn')}</button>
+      <div id="wt-join-err" style="font-size:11px;color:#f66;margin-top:4px;min-height:14px;"></div>
+    </div>
+  `;
+
+  panel.querySelector('#wt-pc-close')?.addEventListener('click', () => {
+    panelVisible = false; panel.style.display = 'none';
+  });
+
+  // 预填昵称
+  chrome.runtime.sendMessage({ type: 'get_nickname' }, r => {
+    const nick = r?.nickname || '';
+    const n = panel.querySelector('#wt-nick-input');
+    if (n) n.value = nick;
+  });
+
+  // ── 创建房间 ──────────────────────────────────────
+  panel.querySelector('#wt-create-btn')?.addEventListener('click', () => {
+    const btn = panel.querySelector('#wt-create-btn');
+    const errEl = panel.querySelector('#wt-create-err');
+    btn.disabled = true; btn.textContent = t('panel_creating');
+    if (errEl) errEl.textContent = '';
+
+    chrome.runtime.sendMessage({ type: 'get_nickname' }, r => {
+      const nickname = r?.nickname || '用户';
+      chrome.runtime.sendMessage({
+        type: 'api_create_room',
+        videoId,
+        platform,
+        currentTime: adapter?.getCurrentTime() || 0,
+        paused: adapter?.isPaused() !== false,
+        isLive: adapter?.isLive() || false,
+        nickname,
+      }, res => {
+        if (!res?.ok) {
+          if (errEl) errEl.textContent = res?.error || t('err_create_failed');
+          btn.disabled = false; btn.textContent = t('panel_create_btn');
+          return;
+        }
+        const data = res.data;
+        currentToken = data.token;
+        currentVideoId = videoId;
+        currentPlatform = platform;
+        chrome.runtime.sendMessage({
+          type: 'connect_room',
+          roomId: data.room_id,
+          token: data.token,
+          isHost: true,
+          videoId, platform, nickname,
+          tabId: null, // background 会用 sender.tab?.id
+        });
+        isInRoom = true; isHost = true; isActiveTab = true;
+        panelVisible = false; panel.style.display = 'none';
+        updateBubble();
+      });
+    });
+  });
+
+  // ── 加入房间 ──────────────────────────────────────
+  panel.querySelector('#wt-do-join-btn')?.addEventListener('click', () => {
+    const btn = panel.querySelector('#wt-do-join-btn');
+    const errEl = panel.querySelector('#wt-join-err');
+    const token = panel.querySelector('#wt-code-input')?.value.trim();
+    const nickname = panel.querySelector('#wt-nick-input')?.value.trim();
+    if (!token) { if (errEl) errEl.textContent = t('panel_err_code'); return; }
+    if (!nickname) { if (errEl) errEl.textContent = t('panel_err_nick'); return; }
+    if (errEl) errEl.textContent = '';
+    btn.disabled = true; btn.textContent = t('panel_joining');
+
+    chrome.runtime.sendMessage({ type: 'api_join_room', token, nickname }, res => {
+      if (!res?.ok) {
+        if (errEl) errEl.textContent = res?.error || t('panel_err_failed');
+        btn.disabled = false; btn.textContent = t('panel_join_btn');
+        return;
+      }
+      const info = res.data;
+      chrome.runtime.sendMessage({
+        type: 'connect_room',
+        roomId: info.room_id,
+        isHost: false,
+        hostName: info.host_name,
+        videoId: info.video_id,
+        platform: info.platform,
+        nickname,
+        hostSearching: info.host_searching || false,
+        tabId: null,
+      });
+      // 清除 hash
+      if (hashCode) history.replaceState(null, '', location.pathname + location.search);
+      isInRoom = true; isHost = false; isActiveTab = true;
+      currentHostName = info.host_name;
+      panelVisible = false; panel.style.display = 'none';
+      updateBubble();
+      // 跳转到房主视频
+      if (info.video_id && !info.host_searching) {
+        const url = info.platform === 'youtube'
+          ? `https://www.youtube.com/watch?v=${info.video_id}`
+          : `https://www.bilibili.com/video/${info.video_id}/`;
+        if (!location.href.includes(info.video_id)) location.href = url;
+      }
+    });
+  });
+
+  // Enter 键触发加入
+  panel.querySelector('#wt-code-input')?.addEventListener('keydown', e => {
+    if (e.key === 'Enter') panel.querySelector('#wt-do-join-btn')?.click();
+  });
+}
+
+function renderHostPanel() {
+  const memberCount = currentMembers.length;
+  const inviteLink = currentVideoId && currentPlatform
+    ? (currentPlatform === 'youtube'
+        ? `https://www.youtube.com/watch?v=${currentVideoId}#wt-code=${currentToken}`
+        : `https://www.bilibili.com/video/${currentVideoId}/?wt_code=${currentToken}`)
+    : '';
+
+  panel.innerHTML = `
+    <div class="wt-panel-title">
+      ${t('panel_host_title')}
+      <button class="wt-panel-close" id="wt-pc-close">×</button>
+    </div>
+    <div class="wt-status-row">
+      <div class="wt-dot green" id="wt-status-dot"></div>
+      <span id="wt-status-text">${t('panel_status_syncing')}</span>
+    </div>
+
+    <div class="wt-section">
+      <div class="wt-section-label">${t('invite_code_label')}</div>
+      <div class="wt-code-row">
+        <span class="wt-code-val">${currentToken || '—'}</span>
+        <button class="wt-copy-btn" id="wt-copy-code">${t('copy')}</button>
+      </div>
+    </div>
+
+    ${inviteLink ? `
+    <div class="wt-section">
+      <div class="wt-section-label">${t('invite_link_label')}</div>
+      <div class="wt-link-row">
+        <span class="wt-link-val" title="${inviteLink}">${inviteLink}</span>
+        <button class="wt-copy-btn" id="wt-copy-link">${t('copy')}</button>
+      </div>
+    </div>
+    ` : ''}
+
+    <div class="wt-members">
+      <div class="wt-member-header">${t('panel_members_header', { n: memberCount })}</div>
+      <div id="wt-member-list">${renderMemberItems(currentMembers)}</div>
+    </div>
+
+    <div class="wt-section">
+      <div class="wt-section-label">${t('panel_settings_section')}</div>
+      <div class="wt-subsection">
+        <div class="wt-toggle-row">
+          <span>${t('panel_veto_label')}</span>
+          <label class="wt-toggle-wrap">
+            <input type="checkbox" id="wt-veto-chk">
+            <div class="wt-toggle-slider"></div>
+          </label>
+        </div>
+        <div id="wt-veto-sec-row" style="display:none;padding:6px 0;font-size:12px;color:#aaa;align-items:center;gap:6px;">
+          ${t('panel_veto_cd')} <input type="number" class="wt-num-input" id="wt-veto-sec" min="3" max="30" value="5"> ${t('panel_veto_sec')}
+        </div>
+        <div class="wt-toggle-row">
+          <span>${t('panel_guest_ctrl')}</span>
+          <label class="wt-toggle-wrap">
+            <input type="checkbox" id="wt-guest-ctrl-chk">
+            <div class="wt-toggle-slider"></div>
+          </label>
+        </div>
+      </div>
+    </div>
+
+    <button class="wt-btn danger" id="wt-leave-btn">${t('leave_room')}</button>
+  `;
+
+  panel.querySelector('#wt-pc-close')?.addEventListener('click', () => { panelVisible = false; panel.style.display = 'none'; });
+
+  panel.querySelector('#wt-copy-code')?.addEventListener('click', () => {
+    const btn = panel.querySelector('#wt-copy-code');
+    copyText(currentToken, btn);
+    if (btn) { const orig = t('copy'); setTimeout(() => { btn.textContent = orig; }, 2000); }
+  });
+  if (inviteLink) {
+    panel.querySelector('#wt-copy-link')?.addEventListener('click', () => {
+      copyText(inviteLink, panel.querySelector('#wt-copy-link'));
+    });
+  }
+
+  // 加载并初始化设置开关
+  chrome.storage.local.get({ vetoEnabled: false, vetoSeconds: 5, allowGuestControl: false }, s => {
+    const vetoChk = panel.querySelector('#wt-veto-chk');
+    const secRow = panel.querySelector('#wt-veto-sec-row');
+    const secInput = panel.querySelector('#wt-veto-sec');
+    const guestChk = panel.querySelector('#wt-guest-ctrl-chk');
+    if (!vetoChk) return;
+
+    vetoChk.checked = s.vetoEnabled;
+    secInput.value = s.vetoSeconds;
+    if (guestChk) guestChk.checked = s.allowGuestControl;
+    secRow.style.display = s.vetoEnabled ? 'flex' : 'none';
+
+    vetoChk.addEventListener('change', () => {
+      const enabled = vetoChk.checked;
+      const secs = Math.max(3, Math.min(30, parseInt(secInput?.value) || 5));
+      secRow.style.display = enabled ? 'flex' : 'none';
+      chrome.storage.local.set({ vetoEnabled: enabled, vetoSeconds: secs });
+      chrome.runtime.sendMessage({ type: 'veto_config', enabled, seconds: secs });
+    });
+
+    secInput.addEventListener('change', () => {
+      const secs = Math.max(3, Math.min(30, parseInt(secInput.value) || 5));
+      secInput.value = secs;
+      chrome.storage.local.set({ vetoSeconds: secs });
+      chrome.runtime.sendMessage({ type: 'veto_config', enabled: vetoChk.checked, seconds: secs });
+    });
+
+    guestChk?.addEventListener('change', () => {
+      const allowed = guestChk.checked;
+      chrome.storage.local.set({ allowGuestControl: allowed });
+      chrome.runtime.sendMessage({ type: 'guest_control_config', allowed });
+    });
+  });
+
+  panel.querySelector('#wt-leave-btn')?.addEventListener('click', () => {
+    chrome.runtime.sendMessage({ type: 'leave_room' });
+    isInRoom = false; isHost = false; currentMembers = [];
+    updateBubble(); panelVisible = false; panel.style.display = 'none';
+    showInfo(t('info_left_room'), 3000);
+  });
+}
+
+function renderGuestPanel() {
+  panel.innerHTML = `
+    <div class="wt-panel-title">
+      ${t('panel_guest_title')}
+      <button class="wt-panel-close" id="wt-pc-close">×</button>
+    </div>
+    <div class="wt-status-row">
+      <div class="wt-dot green" id="wt-status-dot"></div>
+      <span id="wt-status-text">${t('panel_status_syncing')}</span>
+    </div>
+    <div class="wt-section-label">${t('panel_host_label')} ${escHtml(currentHostName || '—')}</div>
+    <div class="wt-members" style="margin-top:8px;">
+      <div class="wt-member-header">${t('panel_members_header', { n: currentMembers.length })}</div>
+      <div id="wt-member-list">
+        ${renderMemberItems(currentMembers)}
+      </div>
+    </div>
+    <button class="wt-btn blue" id="wt-catchup-btn">${t('catch_up_btn')}</button>
+    <button class="wt-btn danger" id="wt-leave-btn">${t('leave_room')}</button>
+  `;
+
+  panel.querySelector('#wt-pc-close')?.addEventListener('click', () => { panelVisible = false; panel.style.display = 'none'; });
+  panel.querySelector('#wt-catchup-btn')?.addEventListener('click', () => {
+    chrome.runtime.sendMessage({ type: 'catch_up' });
+  });
+  panel.querySelector('#wt-leave-btn')?.addEventListener('click', () => {
+    chrome.runtime.sendMessage({ type: 'leave_room' });
+    isInRoom = false; isHost = false; currentMembers = [];
+    updateBubble(); panelVisible = false; panel.style.display = 'none';
+    showInfo(t('info_left_room'), 3000);
+  });
+}
+
+function renderMemberItems(members) {
+  if (!members || members.length === 0) return `<div style="color:#666;font-size:12px;">${t('member_empty')}</div>`;
+  return members.map(m => `
+    <div class="wt-member-item">
+      <div class="wt-member-dot ${m.is_host ? 'host' : ''}"></div>
+      <span>${escHtml(m.name)}${m.is_host ? ' 👑' : ''}</span>
+    </div>
+  `).join('');
+}
+
+function updatePanelIfVisible() {
+  if (panelVisible) renderPanel();
+}
+
+function updateStatusInPanel(status) {
+  const dot = shadowRoot.getElementById('wt-status-dot');
+  const text = shadowRoot.getElementById('wt-status-text');
+  if (!dot || !text) return;
+  if (status === 'connected') {
+    dot.className = 'wt-dot green'; text.textContent = t('panel_status_syncing');
+  } else if (status === 'reconnecting') {
+    dot.className = 'wt-dot orange'; text.textContent = t('panel_status_reconnecting');
+  } else {
+    dot.className = 'wt-dot gray'; text.textContent = t('panel_status_disconnected');
+  }
+}
+
+// ── 通用工具 ──────────────────────────────────────
+function copyText(text, btn) {
+  navigator.clipboard.writeText(text).then(() => {
+    if (btn) { const orig = btn.textContent; btn.textContent = t('copied'); setTimeout(() => { btn.textContent = orig; }, 2000); }
+  });
+}
+
+function escHtml(s) {
+  return (s || '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+function getHashCode() {
+  // YouTube 用 hash，Bilibili 用 query 参数（B站 hash 会被路由拦截）
+  const hashMatch = location.hash.match(/[#&]wt-code=([^&]+)/);
+  if (hashMatch) return hashMatch[1];
+  return new URLSearchParams(location.search).get('wt_code') || null;
+}
+
+// ── 通知 banner ───────────────────────────────────
+function showInfo(text, duration = 4000) {
+  const b = getBanners();
+  if (!b) return;
+  if (infoBanner) { clearTimeout(infoTimerId); infoBanner.remove(); infoBanner = null; }
+  infoBanner = document.createElement('div');
+  infoBanner.className = 'wt-banner info';
+  infoBanner.innerHTML = `<span class="wt-banner-text">${escHtml(text)}</span>`;
+  b.appendChild(infoBanner);
+  infoTimerId = setTimeout(() => { infoBanner?.remove(); infoBanner = null; }, duration);
+}
+
+function showVetoBanner(senderName, action, seconds) {
+  const b = getBanners();
+  if (!b) return;
+  clearInterval(vetoTimerId); vetoTimerId = null;
+  vetoBanner?.remove(); vetoBanner = null;
+
+  const getVetoText = (name, act) => {
+    if (act === 'seek')  return t('banner_veto_seek',  { name });
+    if (act === 'play')  return t('banner_veto_play',  { name });
+    if (act === 'pause') return t('banner_veto_pause', { name });
+    return name + ' ' + act;
+  };
+  let remaining = seconds;
+
+  vetoBanner = document.createElement('div');
+  vetoBanner.className = 'wt-banner veto';
+  b.appendChild(vetoBanner);
+
+  const render = () => {
+    if (!vetoBanner) return;
+    vetoBanner.innerHTML = `
+      <span class="wt-banner-text">${getVetoText(escHtml(senderName), action)}</span>
+      <span class="wt-cd">${remaining}s</span>
+      <button class="wt-bBtn danger" id="wt-veto-btn">${t('banner_veto_deny')}</button>
+    `;
+    vetoBanner.querySelector('#wt-veto-btn')?.addEventListener('click', () => {
+      chrome.runtime.sendMessage({ type: 'veto' });
+      clearInterval(vetoTimerId); vetoTimerId = null;
+      vetoBanner?.remove(); vetoBanner = null;
+    });
+  };
+  render();
+  vetoTimerId = setInterval(() => {
+    remaining--;
+    if (remaining <= 0) { clearInterval(vetoTimerId); vetoTimerId = null; vetoBanner?.remove(); vetoBanner = null; }
+    else render();
+  }, 1000);
+}
+
+function showSwitchBanner(hostName, videoId, platform) {
+  const b = getBanners();
+  if (!b) return;
+  clearInterval(switchTimerId); switchTimerId = null;
+  switchBanner?.remove(); switchBanner = null;
+
+  let remaining = 30; // 30 秒倒计时
+  switchBanner = document.createElement('div');
+  switchBanner.className = 'wt-banner switch';
+  b.appendChild(switchBanner);
+
+  const targetUrl = platform === 'youtube'
+    ? `https://www.youtube.com/watch?v=${videoId}`
+    : `https://www.bilibili.com/video/${videoId}/`;
+
+  const render = () => {
+    if (!switchBanner) return;
+    switchBanner.innerHTML = `
+      <span class="wt-banner-text">${t('banner_switch_text', { name: escHtml(hostName) })}</span>
+      <span class="wt-cd">${remaining}s</span>
+      <button class="wt-bBtn ok" id="wt-sw-follow">${t('banner_switch_follow')}</button>
+      <button class="wt-bBtn danger" id="wt-sw-leave">${t('banner_switch_leave')}</button>
+    `;
+    switchBanner.querySelector('#wt-sw-follow')?.addEventListener('click', () => {
+      clearInterval(switchTimerId); switchTimerId = null;
+      switchBanner?.remove(); switchBanner = null;
+      if (hostSearching) {
+        showInfo(t('banner_switch_host_searching'), 3000);
+        return;
+      }
+      location.href = targetUrl;
+    });
+    switchBanner.querySelector('#wt-sw-leave')?.addEventListener('click', () => {
+      clearInterval(switchTimerId); switchTimerId = null;
+      switchBanner?.remove(); switchBanner = null;
+      chrome.runtime.sendMessage({ type: 'leave_room' });
+      isInRoom = false; isHost = false; currentMembers = [];
+      updateBubble();
+      showInfo(t('info_left_room'), 3000);
+    });
+  };
+  render();
+
+  switchTimerId = setInterval(() => {
+    remaining--;
+    if (remaining <= 0) {
+      clearInterval(switchTimerId); switchTimerId = null;
+      switchBanner?.remove(); switchBanner = null;
+      // 超时未选择 → 自动退出房间
+      chrome.runtime.sendMessage({ type: 'leave_room' });
+      isInRoom = false; isHost = false; currentMembers = [];
+      updateBubble();
+      showInfo(t('banner_auto_left'), 4000);
+    } else {
+      render();
+    }
+  }, 1000);
+}
+
+function showLostBanner(hostName) {
+  const b = getBanners();
+  if (!b) return;
+  const el = document.createElement('div');
+  el.className = 'wt-banner lost';
+  el.innerHTML = `
+    <span class="wt-banner-text">${t('banner_lost_text', { name: escHtml(hostName || '?') })}</span>
+    <button class="wt-bBtn" id="wt-lost-ok">${t('close')}</button>
+  `;
+  b.appendChild(el);
+  el.querySelector('#wt-lost-ok')?.addEventListener('click', () => el.remove());
+  setTimeout(() => el.remove(), 8000);
+}
+
+function showNonActiveBanner(role) {
+  const b = getBanners();
+  if (!b) return;
+  // 避免重复
+  if (shadowRoot.getElementById('wt-nonactive-banner')) return;
+  const el = document.createElement('div');
+  el.id = 'wt-nonactive-banner';
+  el.className = 'wt-banner info';
+  const moveBtn = role === 'host' ? `<button class="wt-bBtn" id="wt-move-here">${t('banner_move_here')}</button>` : '';
+  el.innerHTML = `
+    <span class="wt-banner-text">${role === 'host' ? t('banner_non_active_host') : t('banner_non_active_guest')}</span>
+    ${moveBtn}
+    <button class="wt-bBtn" id="wt-nonactive-ok">${t('close')}</button>
+  `;
+  b.appendChild(el);
+  el.querySelector('#wt-move-here')?.addEventListener('click', () => {
+    chrome.runtime.sendMessage({ type: 'move_active_tab' }, res => {
+      if (res?.ok) {
+        el.remove();
+        isActiveTab = true;
+        syncStateFromBackground();
+      }
+    });
+  });
+  el.querySelector('#wt-nonactive-ok')?.addEventListener('click', () => el.remove());
+  setTimeout(() => el.remove(), 12000);
+}
+
+function showReconnectCatchUpPrompt() {
+  const b = getBanners();
+  if (!b) return;
+  const el = document.createElement('div');
+  el.className = 'wt-banner info';
+  el.innerHTML = `
+    <span class="wt-banner-text">${t('reconnect_prompt')}</span>
+    <button class="wt-bBtn ok" id="wt-ru-yes">${t('reconnect_yes')}</button>
+    <button class="wt-bBtn" id="wt-ru-no">${t('reconnect_no')}</button>
+  `;
+  b.appendChild(el);
+  const dismiss = () => el.remove();
+  el.querySelector('#wt-ru-yes')?.addEventListener('click', () => {
+    chrome.runtime.sendMessage({ type: 'catch_up' }); dismiss();
+  });
+  el.querySelector('#wt-ru-no')?.addEventListener('click', dismiss);
+  setTimeout(dismiss, 10000);
+}
+
+// ── 从 background 同步状态 ────────────────────────
+// 注意：不覆盖 isActiveTab，由 room_joined / became_active_tab / lost_active_tab 消息管理
+function syncStateFromBackground(callback) {
+  chrome.runtime.sendMessage({ type: 'get_status' }, res => {
+    if (chrome.runtime.lastError || !res) { callback?.(); return; }
+    if (res.currentRoom) {
+      isInRoom = true;
+      isHost = res.currentRoom.isHost;
+      hostSearching = res.currentRoom.hostSearching || false;
+      currentMembers = res.currentRoom.members || [];
+      currentHostName = res.currentRoom.hostName || '';
+      currentToken = res.currentRoom.token || '';
+      currentVideoId = res.currentRoom.videoId || '';
+      currentPlatform = res.currentRoom.platform || '';
+      // isActiveTab 不在这里更新，避免覆盖 room_joined 等消息设置的正确值
+    } else {
+      isInRoom = false; isHost = false; isActiveTab = false;
+      currentMembers = []; currentToken = '';
+    }
+    updateBubble();
+    updatePanelIfVisible();
+    callback?.();
+  });
+}
+
+// ── 适配器初始化 ──────────────────────────────────
+let positionTimer = null;
+
+function initAdapter() {
+  if (!adapter) return;
+  adapter.init();
+
+  adapter.onPlay(() => {
+    // 不检查 isHost：房客控制开关开启时房客也需要发送，由 background.js 根据 guestControlAllowed 决定是否转发
+    if (!isInRoom || !isActiveTab || suppressEvents) return;
+    chrome.runtime.sendMessage({ type: 'sync_action', action: 'play', seekTime: adapter.getCurrentTime() });
+  });
+  adapter.onPause(() => {
+    if (!isInRoom || !isActiveTab || suppressEvents) return;
+    chrome.runtime.sendMessage({ type: 'sync_action', action: 'pause', seekTime: adapter.getCurrentTime() });
+  });
+  adapter.onSeek(time => {
+    if (!isInRoom || !isActiveTab || suppressEvents) return;
+    chrome.runtime.sendMessage({ type: 'sync_action', action: 'seek', seekTime: time });
+  });
+  adapter.onVideoChange((videoId, isLive) => {
+    // 视频切换只由房主广播
+    if (!isInRoom || !isHost || !isActiveTab) return;
+    chrome.runtime.sendMessage({ type: 'video_changed', videoId, platform: adapter.getPlatform(), isLive });
+    if (videoId) {
+      currentVideoId = videoId;
+      currentPlatform = adapter.getPlatform();
+    }
+  });
+
+  positionTimer = setInterval(() => {
+    if (!isInRoom || !isHost || !isActiveTab) return;
+    chrome.runtime.sendMessage({ type: 'position_update', currentTime: adapter.getCurrentTime(), paused: adapter.isPaused() });
+  }, 3000);
+}
+
+// ── 页面初始化 ────────────────────────────────────
+async function onPageReady() {
+  // 先读语言设置，确保所有 UI 文字正确
+  const lang = await new Promise(r => chrome.storage.local.get({ lang: 'en' }, s => r(s.lang || 'en')));
+  setLang(lang);
+
+  initOverlay();
+
+  // 检测 URL 中是否有邀请码
+  const hashCode = getHashCode();
+
+  chrome.runtime.sendMessage({ type: 'check_is_active_tab' }, res => {
+    if (chrome.runtime.lastError || !res) return;
+
+    if (res.inRoom) {
+      isInRoom = true;
+      isHost = res.isHost;
+      hostSearching = res.hostSearching || false;
+      isActiveTab = res.isActiveTab;
+
+      syncStateFromBackground(() => {
+        if (isActiveTab) {
+          if (isHost) {
+            // 房主：检查当前视频是否和房间记录不一致（跨平台/整页刷新后需要广播）
+            const pageVid = adapter?.getVideoId();
+            const pagePlat = adapter?.getPlatform();
+            if (pageVid && (pageVid !== currentVideoId || pagePlat !== currentPlatform)) {
+              setTimeout(() => {
+                chrome.runtime.sendMessage({
+                  type: 'video_changed',
+                  videoId: pageVid,
+                  platform: pagePlat,
+                  isLive: adapter?.isLive() || false,
+                });
+                currentVideoId = pageVid;
+                currentPlatform = pagePlat;
+              }, 800);
+            }
+          } else {
+            // 房客：自动追上房主
+            setTimeout(() => chrome.runtime.sendMessage({ type: 'catch_up' }), 600);
+          }
+        } else {
+          showNonActiveBanner(isHost ? 'host' : 'guest');
+        }
+        updateBubble();
+        if (hashCode) showInfo(t('info_already_in_room'), 4000);
+      });
+    } else {
+      updateBubble();
+      // 不在房间时，2 秒后展示 join banner（如果没被 dismiss 过）
+      if (!sessionStorage.getItem('wt-no-banner')) {
+        setTimeout(() => {
+          chrome.runtime.sendMessage({ type: 'get_status' }, s => {
+            if (!s?.currentRoom && shadowRoot) {
+              if (hashCode) {
+                // 有邀请码：打开面板让用户加入
+                panelVisible = true;
+                panel.style.display = '';
+                renderPanel();
+              }
+            }
+          });
+        }, 2000);
+      }
+    }
+  });
+
+  initAdapter();
+}
+
+// ── 消息监听 ───────────────────────────────────────
+chrome.runtime.onMessage.addListener((msg) => {
+  switch (msg.type) {
+
+    case 'ws_status':
+      if (msg.status === 'reconnecting') setBubbleReconnecting();
+      else if (msg.status === 'connected') { updateBubble(); }
+      else { updateBubble(); }
+      updateStatusInPanel(msg.status);
+      break;
+
+    case 'room_joined':
+      isInRoom = true;
+      isHost = msg.isHost;
+      isActiveTab = true;
+      syncStateFromBackground(() => {
+        if (!msg.isHost) setTimeout(() => chrome.runtime.sendMessage({ type: 'catch_up' }), 600);
+        updateBubble();
+        updatePanelIfVisible();
+      });
+      break;
+
+    case 'became_active_tab':
+      isActiveTab = true;
+      syncStateFromBackground(() => { updateBubble(); updatePanelIfVisible(); });
+      break;
+
+    case 'lost_active_tab':
+      isActiveTab = false;
+      updateBubble();
+      break;
+
+    case 'sync_apply':
+      // 房客控制开启时房主也要接受同步，去掉 isHost 限制
+      if (!isInRoom || !isActiveTab) break;
+      suppressEvents = true;
+      if (msg.action === 'play') adapter?.play();
+      else if (msg.action === 'pause') adapter?.pause();
+      else if (msg.action === 'seek') {
+        if (adapter?.seekTo(msg.seekTime) === false) {
+          suppressEvents = false;
+          setTimeout(() => chrome.runtime.sendMessage({ type: 'catch_up' }), 1500);
+          break;
+        }
+      }
+      setTimeout(() => { suppressEvents = false; }, 800);
+      break;
+
+    case 'sync_opportunity':
+      // 房客控制开启时房主也要看到否决弹窗，去掉 isHost 限制
+      if (!isInRoom || !isActiveTab) break;
+      showVetoBanner(msg.hostName, msg.action, msg.delaySeconds);
+      break;
+
+    case 'sync_vetoed':
+      clearInterval(vetoTimerId); vetoTimerId = null;
+      vetoBanner?.remove(); vetoBanner = null;
+      break;
+
+    case 'catch_up_result':
+      if (!adapter || !isActiveTab) break;
+      suppressEvents = true;
+      if (adapter.seekTo(msg.seekTime) === false) {
+        // 视频元素还没就绪，1.5s 后重新请求
+        suppressEvents = false;
+        setTimeout(() => chrome.runtime.sendMessage({ type: 'catch_up' }), 1500);
+        break;
+      }
+      if (!msg.paused) adapter.play(); else adapter.pause();
+      setTimeout(() => { suppressEvents = false; }, 800);
+      break;
+
+    case 'host_switched':
+      if (!isInRoom || isHost || !isActiveTab) break;
+      showSwitchBanner(msg.hostName, msg.videoId, msg.platform);
+      break;
+
+    case 'host_searching':
+      hostSearching = true;
+      updateBubble();
+      break;
+
+    case 'host_reconnecting':
+      if (isInRoom && !isHost) {
+        setBubbleReconnecting();
+        showInfo(t('banner_host_reconnecting', { name: escHtml(msg.hostName) }), 8000);
+      }
+      break;
+
+    case 'host_reconnected':
+      if (isInRoom && !isHost) {
+        updateBubble();
+        showInfo(t('banner_host_reconnected'), 3000);
+      }
+      break;
+
+    case 'room_lost':
+      isInRoom = false; isHost = false; isActiveTab = false;
+      hostSearching = false; currentMembers = []; currentToken = '';
+      clearInterval(positionTimer); positionTimer = null;
+      clearInterval(vetoTimerId); vetoTimerId = null;
+      vetoBanner?.remove(); vetoBanner = null;
+      clearInterval(switchTimerId); switchTimerId = null;
+      switchBanner?.remove(); switchBanner = null;
+      panelVisible = false; if (panel) panel.style.display = 'none';
+      updateBubble();
+      if (!msg.autoLeave) showLostBanner(msg.hostName);
+      break;
+
+    case 'room_dissolved':
+      // 房间被房主断线后解散
+      if (isInRoom) {
+        isInRoom = false; isHost = false; isActiveTab = false;
+        hostSearching = false; currentMembers = []; currentToken = '';
+        clearInterval(positionTimer); positionTimer = null;
+        clearInterval(vetoTimerId); vetoTimerId = null; vetoBanner?.remove(); vetoBanner = null;
+        clearInterval(switchTimerId); switchTimerId = null; switchBanner?.remove(); switchBanner = null;
+        panelVisible = false; if (panel) panel.style.display = 'none';
+        updateBubble();
+        showLostBanner(msg.hostName);
+      }
+      break;
+
+    case 'self_left_room':
+      // 用户自己在某个页面主动退出，通知其他 tab 清除状态
+      if (isInRoom) {
+        isInRoom = false; isHost = false; isActiveTab = false;
+        hostSearching = false; currentMembers = []; currentToken = '';
+        clearInterval(positionTimer); positionTimer = null;
+        clearInterval(vetoTimerId); vetoTimerId = null; vetoBanner?.remove(); vetoBanner = null;
+        clearInterval(switchTimerId); switchTimerId = null; switchBanner?.remove(); switchBanner = null;
+        panelVisible = false; if (panel) panel.style.display = 'none';
+        updateBubble();
+      }
+      break;
+
+    case 'member_list':
+      currentMembers = msg.members || [];
+      updatePanelIfVisible();
+      break;
+
+    case 'reconnect_catch_up_prompt':
+      if (isActiveTab && !isHost) showReconnectCatchUpPrompt();
+      break;
+
+    case 'get_player_state':
+      // 由 popup 调用
+      return; // 不处理，下面有 addListener 的 return true
+  }
+});
+
+// 单独处理需要 sendResponse 的消息
+chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
+  if (msg.type === 'get_player_state') {
+    sendResponse({
+      currentTime: adapter?.getCurrentTime() || 0,
+      paused: adapter?.isPaused() !== false,
+      isLive: adapter?.isLive() || false,
+    });
+    return true;
+  }
+});
+
+// ── 启动 ──────────────────────────────────────────
+if (adapter) {
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', onPageReady);
+  } else {
+    onPageReady();
+  }
+}

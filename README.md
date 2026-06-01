@@ -1,0 +1,188 @@
+# WatchTogether
+
+Synchronized video watching for YouTube and Bilibili. Anyone can host their own relay server.
+
+## Features
+
+- Sync playback (play / pause / seek) in real time
+- Supports YouTube and Bilibili
+- Room host controls sync; optional guest control mode
+- Veto protection: guests get a countdown to opt out before sync applies
+- Up to 5 people per room
+- Host can move the active room to any supported tab
+- Video switch notifications with 30-second follow countdown
+- Auto-reconnect with catch-up prompt on reconnect
+- Floating bubble entry on all video pages
+- **Self-hostable** — point the extension at your own server
+
+---
+
+## Architecture
+
+```
+Browser Extension (Chrome)
+  ├── background.js      Service worker: WebSocket, state, API calls
+  ├── content.js         Floating bubble, banners, video event hooks
+  ├── adapters/          YouTube & Bilibili video element adapters
+  ├── popup/             Extension popup (create/join room)
+  └── settings/          Settings page (server URL, nickname, language)
+
+Go Server
+  ├── main.go            HTTP routes
+  ├── ws.go              WebSocket handler, sync logic
+  ├── room.go            Room create/join REST endpoints
+  ├── models.go          Data types
+  ├── state.go           Global in-memory state
+  ├── config.go          Environment variable config
+  ├── security.go        IP detection, CORS
+  ├── cleanup.go         Periodic room expiry
+  ├── logger.go          Rotating log writer
+  └── metrics.go         Prometheus metrics
+```
+
+---
+
+## Server Deployment
+
+### Requirements
+
+- Linux server (Ubuntu 20.04+ / Debian 11+ / CentOS 8+)
+- A domain name with DNS pointing to the server
+- Ports 80 and 443 open (for Nginx + Let's Encrypt)
+
+### One-command install
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/YOUR_USERNAME/watchtogether/main/watchtogether/install.sh \
+  | bash -s -- --port 8892 --domain watch.example.com
+```
+
+Or clone first and run locally:
+
+```bash
+git clone https://github.com/YOUR_USERNAME/watchtogether
+cd watchtogether/watchtogether
+bash install.sh --port 8892 --domain watch.example.com
+```
+
+The script will:
+1. Install Go if needed
+2. Compile the binary
+3. Register and start a `systemd` service
+4. Open the firewall port
+
+### Nginx + HTTPS (required for the extension)
+
+Chrome extensions require `wss://` (secure WebSocket). Install Nginx and Certbot:
+
+```bash
+apt-get install -y nginx certbot python3-certbot-nginx
+certbot --nginx -d watch.example.com
+```
+
+Add this to your Nginx server block (see `watchtogether/nginx_snippet.conf` for the full snippet):
+
+```nginx
+location /wt/room/ {
+    proxy_pass http://127.0.0.1:8892/room/;
+    proxy_set_header X-Real-IP $remote_addr;
+}
+
+location /wt/ws {
+    proxy_pass http://127.0.0.1:8892/ws;
+    proxy_http_version 1.1;
+    proxy_set_header Upgrade $http_upgrade;
+    proxy_set_header Connection "upgrade";
+    proxy_read_timeout 3600s;
+}
+
+location /wt/health {
+    proxy_pass http://127.0.0.1:8892/health;
+}
+```
+
+### Service management
+
+```bash
+./manage.sh start     # Start
+./manage.sh stop      # Stop
+./manage.sh restart   # Restart
+./manage.sh deploy    # Recompile and restart
+./manage.sh status    # Status
+./manage.sh log       # Live logs
+./manage.sh log20     # Last 20 log lines
+```
+
+### Environment variables
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `PORT` | `8892` | HTTP listen port |
+| `MAX_ROOMS` | `10000` | Max concurrent rooms |
+| `ROOM_TTL_MINUTES` | `60` | Room expiry after inactivity |
+| `TOKEN_FAIL_MAX` | `5` | Failed joins before IP ban |
+| `TOKEN_BAN_MINUTES` | `10` | IP ban duration |
+| `RATE_LIMIT_PER_MIN` | `5` | Room creations per IP per minute |
+| `WS_MAX_PER_IP` | `20` | Concurrent WS connections per IP |
+| `HEARTBEAT_TIMEOUT` | `60` | WS heartbeat timeout (seconds) |
+| `LOG_PRETTY` | `0` | Set to `1` for human-readable console logs |
+| `LOG_DEBUG` | `0` | Set to `1` for debug-level logging |
+
+---
+
+## Extension Setup
+
+### Load in Chrome (developer mode)
+
+1. Open `chrome://extensions/`
+2. Enable **Developer mode** (top right)
+3. Click **Load unpacked**
+4. Select the `extension/` folder
+
+### Configure your server
+
+1. Click the extension icon → **⚙** (top right)
+2. Enter your server URL: `https://watch.example.com`
+3. Click **Test** to verify the connection
+4. Click **Save Settings**
+
+Leave the server URL blank to use the official server.
+
+### Invite links
+
+The room host can copy an invite link from the popup or the floating bubble panel. The link embeds the invite code:
+
+- **YouTube**: `https://www.youtube.com/watch?v=VIDEO_ID#wt-code=TOKEN`
+- **Bilibili**: `https://www.bilibili.com/video/BV_ID/?wt_code=TOKEN`
+
+When a guest opens the link, the content script detects the code and shows a join prompt.
+
+---
+
+## Development
+
+```bash
+# Build server
+cd watchtogether/backend
+go build -o watchtogether .
+
+# Run with pretty logs
+LOG_PRETTY=1 LOG_DEBUG=1 ./watchtogether
+```
+
+Logs are written to `watchtogether/backend/logs/watchtogether.log` with automatic rotation (max 100 MB per file, 3 files retained).
+
+---
+
+## Supported Platforms
+
+| Platform | Video sync | Invite links |
+|----------|-----------|-------------|
+| YouTube | ✅ | ✅ |
+| Bilibili | ✅ | ✅ |
+
+---
+
+## License
+
+MIT
