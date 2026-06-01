@@ -70,3 +70,21 @@ body{width:300px;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-se
 .member-item.host{font-weight:500;}
 .member-dot{width:6px;height:6px;border-radius:50%;background:#4caf50;flex-shrink:0;}
 .member-name{color:#333;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+
+/* 历史房间 */
+#history-section{margin-top:10px;}
+.history-header{font-size:11px;color:#aaa;font-weight:500;margin-bottom:6px;letter-spacing:.3px;}
+.history-item{display:flex;align-items:center;gap:6px;padding:6px 10px;background:#f8f8f8;border-radius:8px;margin-bottom:5px;}
+.history-info{flex:1;display:flex;align-items:center;gap:7px;min-width:0;}
+.history-dot{width:7px;height:7px;border-radius:50%;flex-shrink:0;background:#ddd;transition:background .3s;}
+.history-dot.online{background:#4caf50;}
+.history-dot.offline{background:#bbb;}
+.history-text{flex:1;min-width:0;}
+.history-host{font-size:12px;font-weight:500;color:#222;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+.history-sub{font-size:11px;color:#999;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;margin-top:1px;}
+.history-actions{display:flex;gap:4px;flex-shrink:0;}
+.history-join{font-size:11px;padding:3px 9px;background:#f0f0f0;color:#333;border:none;border-radius:5px;cursor:pointer;}
+.history-join:hover{background:#e0e0e0;}
+.history-join.offline{opacity:.45;}
+.btn-icon{background:none;border:1px solid #ddd;border-radius:4px;padding:3px 7px;font-size:12px;cursor:pointer;color:#888;line-height:1;}
+.btn-icon:hover{background:#eee;}

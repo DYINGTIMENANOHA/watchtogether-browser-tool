@@ -21,6 +21,7 @@ func main() {
 	mux.HandleFunc("/room/create",        CORSMiddleware(handleCreateRoom(cfg)))
 	mux.HandleFunc("/room/join",          CORSMiddleware(handleJoinRoom(cfg)))
 	mux.HandleFunc("/room/status",        CORSMiddleware(handleStatus()))
+	mux.HandleFunc("/room/check",         CORSMiddleware(handleCheckRoom()))
 	mux.HandleFunc("/room/token/refresh", CORSMiddleware(handleRefreshToken(cfg)))
 	mux.HandleFunc("/ws", handleWS(cfg))
 	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {

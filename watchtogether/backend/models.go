@@ -32,6 +32,7 @@ type Room struct {
 	HostReconnectTimer  *time.Timer       // 重连超时计时器（超时后解散房间）
 	VideoID             string
 	Platform            string
+	Title               string
 	CurrentTime         float64
 	Paused              bool
 	IsLive              bool
@@ -86,6 +87,7 @@ type CreateRoomRequest struct {
 	ClientID string  `json:"client_id"`
 	VideoID  string  `json:"video_id"`
 	Platform string  `json:"platform"`
+	Title    string  `json:"title"`
 	Time     float64 `json:"current_time"`
 	Paused   bool    `json:"paused"`
 	IsLive   bool    `json:"is_live"`
@@ -107,10 +109,20 @@ type JoinRoomResponse struct {
 	HostName      string  `json:"host_name"`
 	VideoID       string  `json:"video_id"`
 	Platform      string  `json:"platform"`
+	Title         string  `json:"title,omitempty"`
 	CurrentTime   float64 `json:"current_time"`
 	Paused        bool    `json:"paused"`
 	IsLive        bool    `json:"is_live"`
 	HostSearching bool    `json:"host_searching"`
+}
+
+type CheckRoomResponse struct {
+	Exists      bool   `json:"exists"`
+	HostName    string `json:"host_name,omitempty"`
+	Platform    string `json:"platform,omitempty"`
+	VideoID     string `json:"video_id,omitempty"`
+	Title       string `json:"title,omitempty"`
+	MemberCount int    `json:"member_count,omitempty"`
 }
 
 type StatusResponse struct {

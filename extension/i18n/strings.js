@@ -166,6 +166,18 @@ const WT_STRINGS = {
     about_github: 'GitHub',
     about_github_val: '(coming soon)',
     about_license: 'License',
+
+    // ── 历史房间 ──────────────────────────────────
+    history_title: 'Recent Rooms',
+    history_join_btn: 'Rejoin',
+    history_copy_code: 'Copy code',
+    history_online: 'Online',
+    history_offline: 'Offline',
+    history_checking: 'Checking...',
+    history_just_now: 'Just now',
+    history_ago_min: '{n}m ago',
+    history_ago_hour: '{n}h ago',
+    history_ago_day: '{n}d ago',
   },
 
   zh: {
@@ -331,6 +343,18 @@ const WT_STRINGS = {
     about_github: 'GitHub',
     about_github_val: '（即将发布）',
     about_license: '许可证',
+
+    // ── 历史房间 ──────────────────────────────────
+    history_title: '最近房间',
+    history_join_btn: '重新加入',
+    history_copy_code: '复制邀请码',
+    history_online: '在线',
+    history_offline: '已过期',
+    history_checking: '检查中...',
+    history_just_now: '刚刚',
+    history_ago_min: '{n}分钟前',
+    history_ago_hour: '{n}小时前',
+    history_ago_day: '{n}天前',
   },
 
   ja: {
@@ -496,6 +520,18 @@ const WT_STRINGS = {
     about_github: 'GitHub',
     about_github_val: '（近日公開）',
     about_license: 'ライセンス',
+
+    // ── 履歴ルーム ────────────────────────────────
+    history_title: '最近のルーム',
+    history_join_btn: '再参加',
+    history_copy_code: 'コードをコピー',
+    history_online: 'オンライン',
+    history_offline: 'オフライン',
+    history_checking: '確認中...',
+    history_just_now: 'たった今',
+    history_ago_min: '{n}分前',
+    history_ago_hour: '{n}時間前',
+    history_ago_day: '{n}日前',
   },
 };
 
@@ -511,6 +547,15 @@ function t(key, vars) {
   const str = WT_STRINGS[_currentLang]?.[key] ?? WT_STRINGS['en']?.[key] ?? key;
   if (!vars) return str;
   return str.replace(/\{(\w+)\}/g, (_, k) => vars[k] ?? '');
+}
+
+// 时间距今描述（依赖 t()，需在 setLang 之后调用）
+function timeAgo(ts) {
+  const diff = Math.floor((Date.now() - ts) / 1000);
+  if (diff < 60) return t('history_just_now');
+  if (diff < 3600) return t('history_ago_min', { n: Math.floor(diff / 60) });
+  if (diff < 86400) return t('history_ago_hour', { n: Math.floor(diff / 3600) });
+  return t('history_ago_day', { n: Math.floor(diff / 86400) });
 }
 
 // 对页面元素应用 data-i18n 翻译

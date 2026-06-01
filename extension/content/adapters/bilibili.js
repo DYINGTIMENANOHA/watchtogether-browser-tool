@@ -64,7 +64,7 @@ class BilibiliAdapter {
       if (location.href !== lastUrl) {
         lastUrl = location.href;
         const newId = this.getVideoId();
-        if (newId && newId !== this._lastVideoId) {
+        if (newId !== this._lastVideoId) {
           this._lastVideoId = newId;
           setTimeout(() => { this._findVideo(); this._onVideoChangeCb && this._onVideoChangeCb(newId, this.isLive()); }, 1500);
         }

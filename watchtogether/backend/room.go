@@ -68,6 +68,7 @@ func handleCreateRoom(cfg Config) http.HandlerFunc {
 			HostClientID: req.ClientID,
 			VideoID:      req.VideoID,
 			Platform:     req.Platform,
+			Title:        req.Title,
 			CurrentTime:  req.Time,
 			Paused:       req.Paused,
 			IsLive:       req.IsLive,
@@ -156,6 +157,7 @@ func handleJoinRoom(cfg Config) http.HandlerFunc {
 			HostName:      room.HostName,
 			VideoID:       room.VideoID,
 			Platform:      room.Platform,
+			Title:         room.Title,
 			CurrentTime:   room.CurrentTime,
 			Paused:        room.Paused,
 			IsLive:        room.IsLive,
@@ -198,6 +200,40 @@ func handleStatus() http.HandlerFunc {
 		}
 
 		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(resp)
+	}
+}
+
+// GET /room/check?token=XXX  轻量检查房间是否在线（不计入失败次数）
+func handleCheckRoom() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		token := r.URL.Query().Get("token")
+		if token == "" {
+			json.NewEncoder(w).Encode(CheckRoomResponse{Exists: false})
+			return
+		}
+		room, ok := globalState.GetRoomByToken(token)
+		if !ok {
+			json.NewEncoder(w).Encode(CheckRoomResponse{Exists: false})
+			return
+		}
+		room.RLock()
+		expired := time.Now().After(room.TokenExpires)
+		if expired {
+			room.RUnlock()
+			json.NewEncoder(w).Encode(CheckRoomResponse{Exists: false})
+			return
+		}
+		resp := CheckRoomResponse{
+			Exists:      true,
+			HostName:    room.HostName,
+			Platform:    room.Platform,
+			VideoID:     room.VideoID,
+			Title:       room.Title,
+			MemberCount: len(room.Members),
+		}
+		room.RUnlock()
 		json.NewEncoder(w).Encode(resp)
 	}
 }

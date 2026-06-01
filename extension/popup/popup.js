@@ -69,9 +69,7 @@ async function getCurrentVideoInfo() {
 }
 
 async function getNickname() {
-  return new Promise(r => chrome.storage.local.get({ nickname: '' }, s => {
-    r(s.nickname || '用户' + Math.random().toString(36).slice(2, 6).toUpperCase());
-  }));
+  return new Promise(r => chrome.runtime.sendMessage({ type: 'get_nickname' }, res => r(res?.nickname || '')));
 }
 
 async function getClientId() {
@@ -154,6 +152,7 @@ async function init() {
       showRoomView(res.currentRoom, res.wsState);
     } else {
       showView('idle');
+      renderHistory();
       if (videoInfo) {
         $('video-title').textContent = videoInfo.title || videoInfo.videoId;
         $('video-meta').textContent = (videoInfo.platform === 'youtube' ? 'YouTube' : 'Bilibili') + (videoInfo.isLive ? ' · ' + t('live') : '');
@@ -264,6 +263,7 @@ $('btn-create').addEventListener('click', async () => {
       client_id: clientId,
       video_id: videoInfo.videoId,
       platform: videoInfo.platform,
+      title: videoInfo.title || '',
       current_time: videoInfo.currentTime,
       paused: videoInfo.paused,
       is_live: videoInfo.isLive,
@@ -309,6 +309,8 @@ $('btn-join').addEventListener('click', async () => {
         nickname,
         hostSearching: info.host_searching || false,
         tabId,
+        joinToken: token,
+        title: info.title || '',
       });
       showRoomView({ isHost: false, roomId: info.room_id, hostName: info.host_name, platform: info.platform, members: [] }, 'connecting');
       // 跳转到视频
@@ -376,5 +378,65 @@ $('toggle-guest-control').addEventListener('change', e => {
 });
 
 $('input-token').addEventListener('keydown', e => { if (e.key === 'Enter') $('btn-join').click(); });
+
+// ── 历史房间 ──────────────────────────────────────
+async function renderHistory() {
+  const { joinHistory = [] } = await new Promise(r => chrome.storage.local.get({ joinHistory: [] }, r));
+  const section = $('history-section');
+  const listEl  = $('history-list');
+  if (!section || !listEl || !joinHistory.length) return;
+
+  section.style.display = '';
+  listEl.innerHTML = joinHistory.map((entry, i) => {
+    const platLabel = entry.platform === 'youtube' ? 'YouTube' : 'Bilibili';
+    const subText   = entry.title ? escHtml(entry.title) : platLabel;
+    return `
+      <div class="history-item">
+        <div class="history-info">
+          <span class="history-dot" id="hd-${i}" title="${t('history_checking')}"></span>
+          <div class="history-text">
+            <div class="history-host">${escHtml(entry.hostName || '—')}</div>
+            <div class="history-sub">${subText} · ${timeAgo(entry.joinedAt)}</div>
+          </div>
+        </div>
+        <div class="history-actions">
+          <button class="btn-icon" id="hcopy-${i}" title="${t('history_copy_code')}">⎘</button>
+          <button class="history-join" id="hjoin-${i}">${t('history_join_btn')}</button>
+        </div>
+      </div>`;
+  }).join('');
+
+  joinHistory.forEach((entry, i) => {
+    $(`hcopy-${i}`)?.addEventListener('click', () => {
+      navigator.clipboard.writeText(entry.token).then(() => {
+        const btn = $(`hcopy-${i}`);
+        if (!btn) return;
+        btn.textContent = '✓';
+        setTimeout(() => { btn.textContent = '⎘'; }, 1500);
+      });
+    });
+    $(`hjoin-${i}`)?.addEventListener('click', () => {
+      $('input-token').value = entry.token;
+      $('btn-join').click();
+    });
+  });
+
+  // 并行检查在线状态
+  const serverUrl = await getServerUrl();
+  const checks = joinHistory.map((entry, i) =>
+    fetch(`${serverUrl}/wt/room/check?token=${encodeURIComponent(entry.token)}`,
+      { signal: AbortSignal.timeout(5000) })
+      .then(r => r.json())
+      .then(data => ({ i, exists: !!data.exists }))
+      .catch(() => ({ i, exists: false }))
+  );
+  const results = await Promise.all(checks);
+  results.forEach(({ i, exists }) => {
+    const dot  = $(`hd-${i}`);
+    const join = $(`hjoin-${i}`);
+    if (dot)  { dot.className  = `history-dot ${exists ? 'online' : 'offline'}`; dot.title = t(exists ? 'history_online' : 'history_offline'); }
+    if (join) { if (!exists) join.classList.add('offline'); }
+  });
+}
 
 init();

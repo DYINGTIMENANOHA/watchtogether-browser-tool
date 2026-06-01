@@ -15,7 +15,7 @@ let _cachedClientId = null;
 chrome.runtime.onInstalled.addListener(async (details) => {
   if (details.reason === 'install') {
     const clientId = _generateUUID();
-    const nickname = _generateNickname();
+    const nickname = _generateNickname('en');
     chrome.storage.local.set({ clientId, nickname, firstRun: true, showBubble: true });
     console.log('[WT] Installed. clientId:', clientId, 'nickname:', nickname);
   }
@@ -28,9 +28,19 @@ function _generateUUID() {
   });
 }
 
-function _generateNickname() {
-  const adj = ['快乐', '可爱', '酷炫', '神秘', '友善', '慵懒', '热情', '机智'];
-  const noun = ['小猫', '大象', '企鹅', '熊猫', '狐狸', '兔子', '松鼠', '海豚'];
+function _generateNickname(lang) {
+  if (lang === 'zh') {
+    const adj = ['快乐', '可爱', '酷炫', '神秘', '友善', '慵懒', '热情', '机智'];
+    const noun = ['小猫', '大象', '企鹅', '熊猫', '狐狸', '兔子', '松鼠', '海豚'];
+    return adj[Math.floor(Math.random() * adj.length)] + noun[Math.floor(Math.random() * noun.length)];
+  }
+  if (lang === 'ja') {
+    const adj = ['元気な', 'かわいい', 'おしゃれな', 'ふしぎな', 'のんびり', 'かしこい', 'たのしい', 'やさしい'];
+    const noun = ['ネコ', 'パンダ', 'キツネ', 'ウサギ', 'クマ', 'タヌキ', 'リス', 'ペンギン'];
+    return adj[Math.floor(Math.random() * adj.length)] + noun[Math.floor(Math.random() * noun.length)];
+  }
+  const adj = ['Happy', 'Cool', 'Curious', 'Friendly', 'Lazy', 'Clever', 'Brave', 'Silly'];
+  const noun = ['Cat', 'Panda', 'Fox', 'Bunny', 'Bear', 'Wolf', 'Tiger', 'Penguin'];
   return adj[Math.floor(Math.random() * adj.length)] + noun[Math.floor(Math.random() * noun.length)];
 }
 
@@ -61,12 +71,22 @@ async function getSettings() {
 }
 
 async function getNickname() {
-  const s = await getSettings();
-  if (s.nickname) return s.nickname;
-  // 没有昵称则生成并保存
-  const n = _generateNickname();
-  chrome.storage.local.set({ nickname: n });
-  return n;
+  return new Promise(resolve => {
+    chrome.storage.local.get({ nickname: '', lang: 'en' }, s => {
+      if (s.nickname) { resolve(s.nickname); return; }
+      const n = _generateNickname(s.lang || 'en');
+      chrome.storage.local.set({ nickname: n });
+      resolve(n);
+    });
+  });
+}
+
+function addToJoinHistory(entry) {
+  chrome.storage.local.get({ joinHistory: [] }, ({ joinHistory }) => {
+    const filtered = joinHistory.filter(r => r.token !== entry.token);
+    filtered.unshift({ ...entry, joinedAt: Date.now() });
+    chrome.storage.local.set({ joinHistory: filtered.slice(0, 5) });
+  });
 }
 
 // ── WebSocket ─────────────────────────────────────
@@ -301,6 +321,15 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         hostSearching: msg.hostSearching || false,
         _wasReconnecting: false,
       };
+      if (!msg.isHost && msg.joinToken) {
+        addToJoinHistory({
+          token: msg.joinToken,
+          hostName: msg.hostName || '',
+          platform: msg.platform || '',
+          videoId: msg.videoId || '',
+          title: msg.title || '',
+        });
+      }
       reconnectAttempts = 0;
       connectWS(msg.roomId, msg.nickname);
       sendResponse({ ok: true });
@@ -403,6 +432,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
               client_id: clientId,
               video_id: msg.videoId || '',
               platform: msg.platform || '',
+              title: msg.title || '',
               current_time: msg.currentTime || 0,
               paused: msg.paused !== false,
               is_live: msg.isLive || false,
@@ -443,6 +473,22 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         }
       })();
       return true; // async
+
+    case 'api_check_room':
+      (async () => {
+        try {
+          const s = await getSettings();
+          const res = await fetch(
+            `${s.serverUrl}/wt/room/check?token=${encodeURIComponent(msg.token)}`,
+            { signal: AbortSignal.timeout(5000) }
+          );
+          const data = await res.json();
+          sendResponse({ ok: true, data });
+        } catch (_) {
+          sendResponse({ ok: false });
+        }
+      })();
+      return true;
 
     case 'get_client_id':
       getClientId().then(id => sendResponse({ clientId: id }));

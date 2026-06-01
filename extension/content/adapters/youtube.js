@@ -60,7 +60,7 @@ class YouTubeAdapter {
   _watchSPANavigation() {
     document.addEventListener('yt-navigate-finish', () => {
       const newId = this.getVideoId();
-      if (newId && newId !== this._lastVideoId) {
+      if (newId !== this._lastVideoId) {
         this._lastVideoId = newId; this._findVideo();
         this._onVideoChangeCb && this._onVideoChangeCb(newId, this.isLive());
       }

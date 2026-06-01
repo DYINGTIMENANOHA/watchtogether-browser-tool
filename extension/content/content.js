@@ -268,6 +268,11 @@ function renderIdlePanel() {
       <button class="wt-btn secondary" id="wt-do-join-btn" style="margin-top:6px">${t('panel_join_btn')}</button>
       <div id="wt-join-err" style="font-size:11px;color:#f66;margin-top:4px;min-height:14px;"></div>
     </div>
+
+    <div id="wt-history-wrap" style="display:none;margin-top:4px;">
+      <div style="font-size:10px;color:#666;margin-bottom:4px;letter-spacing:.3px;">${t('history_title')}</div>
+      <div id="wt-history-list"></div>
+    </div>
   `;
 
   panel.querySelector('#wt-pc-close')?.addEventListener('click', () => {
@@ -294,6 +299,7 @@ function renderIdlePanel() {
         type: 'api_create_room',
         videoId,
         platform,
+        title: getVideoTitle(),
         currentTime: adapter?.getCurrentTime() || 0,
         paused: adapter?.isPaused() !== false,
         isLive: adapter?.isLive() || false,
@@ -351,6 +357,8 @@ function renderIdlePanel() {
         nickname,
         hostSearching: info.host_searching || false,
         tabId: null,
+        joinToken: token,
+        title: info.title || '',
       });
       // 清除 hash
       if (hashCode) history.replaceState(null, '', location.pathname + location.search);
@@ -371,6 +379,56 @@ function renderIdlePanel() {
   // Enter 键触发加入
   panel.querySelector('#wt-code-input')?.addEventListener('keydown', e => {
     if (e.key === 'Enter') panel.querySelector('#wt-do-join-btn')?.click();
+  });
+
+  // 历史房间（最多3条，异步加载）
+  renderIdlePanelHistory();
+}
+
+function renderIdlePanelHistory() {
+  chrome.storage.local.get({ joinHistory: [] }, ({ joinHistory }) => {
+    if (!joinHistory.length) return;
+    const wrap = panel?.querySelector('#wt-history-wrap');
+    if (!wrap) return;
+    const listEl = panel.querySelector('#wt-history-list');
+    if (!listEl) return;
+
+    wrap.style.display = '';
+    const entries = joinHistory.slice(0, 3);
+    listEl.innerHTML = entries.map((entry, i) => {
+      const platLabel = entry.platform === 'youtube' ? 'YouTube' : 'Bilibili';
+      const sub = entry.title ? escHtml(entry.title) : platLabel;
+      return `
+        <div style="display:flex;align-items:center;gap:5px;padding:4px 0;border-bottom:1px solid #2a2a2a;">
+          <span id="wt-hd-${i}" style="width:6px;height:6px;border-radius:50%;background:#555;flex-shrink:0;display:inline-block;" title="${t('history_checking')}"></span>
+          <div style="flex:1;min-width:0;">
+            <div style="font-size:11px;color:#ddd;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${escHtml(entry.hostName || '—')}</div>
+            <div style="font-size:10px;color:#888;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${sub} · ${timeAgo(entry.joinedAt)}</div>
+          </div>
+          <button class="wt-bbtn" id="wt-hjoin-${i}" style="font-size:10px;padding:3px 7px;">${t('history_join_btn')}</button>
+        </div>`;
+    }).join('');
+
+    entries.forEach((entry, i) => {
+      panel.querySelector(`#wt-hjoin-${i}`)?.addEventListener('click', () => {
+        const codeInput = panel?.querySelector('#wt-code-input');
+        if (codeInput) { codeInput.value = entry.token; }
+        panel?.querySelector('#wt-do-join-btn')?.click();
+      });
+    });
+
+    // 检查在线状态
+    entries.forEach((entry, i) => {
+      chrome.runtime.sendMessage({ type: 'api_check_room', token: entry.token }, res => {
+        const dot = panel?.querySelector(`#wt-hd-${i}`);
+        const btn = panel?.querySelector(`#wt-hjoin-${i}`);
+        if (!dot) return;
+        const exists = !!res?.data?.exists;
+        dot.style.background = exists ? '#4caf50' : '#555';
+        dot.title = t(exists ? 'history_online' : 'history_offline');
+        if (btn && !exists) btn.style.opacity = '0.45';
+      });
+    });
   });
 }
 
@@ -566,6 +624,14 @@ function copyText(text, btn) {
 
 function escHtml(s) {
   return (s || '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+function getVideoTitle() {
+  return (document.title || '')
+    .replace(/ - YouTube$/, '')
+    .replace(/_哔哩哔哩_bilibili$/, '')
+    .replace(/ - 哔哩哔哩$/, '')
+    .trim();
 }
 
 function getHashCode() {
@@ -792,12 +858,18 @@ function initAdapter() {
     chrome.runtime.sendMessage({ type: 'sync_action', action: 'seek', seekTime: time });
   });
   adapter.onVideoChange((videoId, isLive) => {
-    // 视频切换只由房主广播
-    if (!isInRoom || !isHost || !isActiveTab) return;
-    chrome.runtime.sendMessage({ type: 'video_changed', videoId, platform: adapter.getPlatform(), isLive });
-    if (videoId) {
-      currentVideoId = videoId;
-      currentPlatform = adapter.getPlatform();
+    if (!isInRoom || !isActiveTab) return;
+    if (isHost) {
+      // 房主：广播视频切换
+      chrome.runtime.sendMessage({ type: 'video_changed', videoId, platform: adapter.getPlatform(), isLive });
+      if (videoId) { currentVideoId = videoId; currentPlatform = adapter.getPlatform(); }
+    } else if (currentVideoId && (!videoId || videoId !== currentVideoId)) {
+      // 房客离开视频（到首页/其他页）或切换到不同视频：立即退房
+      chrome.runtime.sendMessage({ type: 'leave_room' });
+      isInRoom = false; isHost = false; currentMembers = [];
+      updateBubble();
+      panelVisible = false; if (panel) panel.style.display = 'none';
+      showInfo(t('info_left_room'), 3000);
     }
   });
 
