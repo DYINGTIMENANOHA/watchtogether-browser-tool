@@ -137,7 +137,7 @@ function getStyles() {
     .wt-banner.warn{border-left:3px solid #ff9800;}
     .wt-cd{font-weight:700;color:#ff9800;min-width:26px;text-align:center;}
     .wt-banner-text{flex:1;}
-    .wt-bbtn{background:rgba(255,255,255,.12);border:1px solid rgba(255,255,255,.3);color:#fff;padding:4px 10px;border-radius:5px;cursor:pointer;font-size:12px;white-space:nowrap;}
+    .wt-bBtn{background:rgba(255,255,255,.12);border:1px solid rgba(255,255,255,.3);color:#fff;padding:4px 10px;border-radius:5px;cursor:pointer;font-size:12px;white-space:nowrap;}
     .wt-bBtn:hover{background:rgba(255,255,255,.22);}
     .wt-bBtn.ok{background:#4caf50;border-color:#4caf50;}
     .wt-bBtn.danger{border-color:#f44336;color:#ff6b6b;}
@@ -296,7 +296,7 @@ function renderIdlePanel() {
     if (errEl) errEl.textContent = '';
 
     chrome.runtime.sendMessage({ type: 'get_nickname' }, r => {
-      const nickname = r?.nickname || '用户';
+      const nickname = r?.nickname || '';
       chrome.runtime.sendMessage({
         type: 'api_create_room',
         videoId,
@@ -820,19 +820,16 @@ function showSwitchBanner(hostName, videoId, platform, autoLeave = true) {
 function showTransferBanner(newToken, hostName, newVideoId, newPlatform, title) {
   const b = getBanners();
   if (!b) return;
+
+  let remaining = 30;
+  let timerId = null;
   const el = document.createElement('div');
   el.className = 'wt-banner switch';
-  el.innerHTML = `
-    <span class="wt-banner-text">${t('banner_transfer_text', { name: escHtml(hostName || '?') })}</span>
-    <button class="wt-bBtn ok" id="wt-tf-follow">${t('banner_transfer_follow')}</button>
-    <button class="wt-bBtn danger" id="wt-tf-leave">${t('banner_transfer_leave')}</button>
-  `;
   b.appendChild(el);
 
-  const dismiss = () => el.remove();
+  const dismiss = () => { clearInterval(timerId); timerId = null; el.remove(); };
 
-  el.querySelector('#wt-tf-follow')?.addEventListener('click', () => {
-    dismiss();
+  const doFollow = () => {
     chrome.runtime.sendMessage({ type: 'get_nickname' }, r => {
       const nickname = r?.nickname || '';
       chrome.runtime.sendMessage({ type: 'api_join_room', token: newToken, nickname }, res => {
@@ -862,14 +859,24 @@ function showTransferBanner(newToken, hostName, newVideoId, newPlatform, title) 
         }
       });
     });
-  });
+  };
 
-  el.querySelector('#wt-tf-leave')?.addEventListener('click', () => {
-    dismiss();
-    showInfo(t('info_left_room'), 3000);
-  });
+  const render = () => {
+    el.innerHTML = `
+      <span class="wt-banner-text">${t('banner_transfer_text', { name: escHtml(hostName || '?') })}</span>
+      <span class="wt-cd">${remaining}s</span>
+      <button class="wt-bBtn ok" id="wt-tf-follow">${t('banner_transfer_follow')}</button>
+      <button class="wt-bBtn danger" id="wt-tf-leave">${t('banner_transfer_leave')}</button>
+    `;
+    el.querySelector('#wt-tf-follow')?.addEventListener('click', () => { dismiss(); doFollow(); });
+    el.querySelector('#wt-tf-leave')?.addEventListener('click', () => { dismiss(); showInfo(t('info_left_room'), 3000); });
+  };
 
-  setTimeout(dismiss, 30000);
+  render();
+  timerId = setInterval(() => {
+    remaining--;
+    if (remaining <= 0) { dismiss(); } else { render(); }
+  }, 1000);
 }
 
 function showLostBanner(hostName) {

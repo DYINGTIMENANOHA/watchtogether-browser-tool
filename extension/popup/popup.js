@@ -118,12 +118,6 @@ async function checkFirstRun() {
   });
 }
 
-// ── 检测 popup 被从邀请链接打开（存储的 pendingCode）
-async function getPendingCode() {
-  return new Promise(r => {
-    chrome.storage.local.get({ pendingInviteCode: '' }, s => r(s.pendingInviteCode || ''));
-  });
-}
 
 let videoInfo = null;
 let currentRoomData = null;
@@ -164,13 +158,6 @@ async function init() {
         $('btn-create').disabled = true;
         $('btn-create').style.opacity = '0.4';
       }
-      // 检测是否有待填邀请码（从邀请链接打开）
-      getPendingCode().then(code => {
-        if (code) {
-          $('input-token').value = code;
-          chrome.storage.local.remove('pendingInviteCode');
-        }
-      });
     }
   });
 }

@@ -18,7 +18,6 @@ chrome.runtime.onInstalled.addListener(async (details) => {
     const clientId = _generateUUID();
     const nickname = _generateNickname('en');
     chrome.storage.local.set({ clientId, nickname, firstRun: true, showBubble: true });
-    console.log('[WT] Installed. clientId:', clientId, 'nickname:', nickname);
   }
 });
 
@@ -209,7 +208,6 @@ function _broadcastToAllVideoTabs(msg) {
 
 // ── 服务器消息处理 ─────────────────────────────────
 function handleServerMessage(msg) {
-  console.debug('[WT] server →', msg.type, msg);
 
   switch (msg.type) {
     case 'welcome':
@@ -385,20 +383,6 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         isHost: currentRoom?.isHost || false,
         hostSearching: currentRoom?.hostSearching || false,
       });
-      break;
-
-    case 'move_active_tab':
-      if (currentRoom?.isHost) {
-        const oldTabId = activeTabId;
-        activeTabId = sender.tab?.id || null;
-        sendResponse({ ok: true });
-        sendToActiveTab({ type: 'became_active_tab' });
-        if (oldTabId && oldTabId !== activeTabId) {
-          chrome.tabs.sendMessage(oldTabId, { type: 'lost_active_tab' }).catch(() => {});
-        }
-      } else {
-        sendResponse({ ok: false });
-      }
       break;
 
     case 'sync_action':
