@@ -10,7 +10,8 @@
     "https://streamforsoul.com/*"
   ],
   "background": {
-    "service_worker": "background.js"
+    "service_worker": "background.js",
+    "scripts": ["background.js"]
   },
   "action": {
     "default_popup": "popup/popup.html",
@@ -39,5 +40,11 @@
     "16": "icons/16.png",
     "48": "icons/48.png",
     "128": "icons/128.png"
+  },
+  "browser_specific_settings": {
+    "gecko": {
+      "id": "watchtogether@streamforsoul.com",
+      "strict_min_version": "109.0"
+    }
   }
 }
