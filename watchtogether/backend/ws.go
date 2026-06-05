@@ -15,14 +15,8 @@ import (
 
 const (
 	MaxRoomMembers      = 5
-	HostReconnectWindow = 5 * time.Second // 房主断线后等待重连的窗口（短窗口兜底，deliberate leave 立刻解散）
+	HostReconnectWindow = 5 * time.Second
 )
-
-var upgrader = websocket.Upgrader{
-	CheckOrigin:     func(r *http.Request) bool { return true },
-	ReadBufferSize:  1024,
-	WriteBufferSize: 1024,
-}
 
 type msgRateTracker struct {
 	mu    sync.Mutex
@@ -51,15 +45,12 @@ func validateName(name string) error {
 		return fmt.Errorf("name must be 1-20 characters")
 	}
 	for _, r := range runes {
-		// 拒绝 HTML 特殊字符
 		if r == '<' || r == '>' || r == '&' || r == '"' || r == '\'' || r == '`' {
 			return fmt.Errorf("name contains invalid characters")
 		}
-		// 拒绝控制字符
 		if r < 0x20 {
 			return fmt.Errorf("name contains invalid characters")
 		}
-		// 只允许常见 Unicode：字母、数字、标点、CJK
 		if !unicode.IsLetter(r) && !unicode.IsDigit(r) && !unicode.IsPunct(r) &&
 			!unicode.IsSpace(r) && !unicode.IsSymbol(r) {
 			return fmt.Errorf("name contains unsupported characters")
@@ -85,23 +76,38 @@ func memberListPayload(room *Room) []map[string]any {
 }
 
 func broadcastMemberList(room *Room) {
-	msg := map[string]any{
+	room.Broadcast(map[string]any{
 		"type":    "member_list",
 		"members": memberListPayload(room),
 		"count":   len(room.Members),
-	}
-	room.Broadcast(msg, "")
+	}, "")
 }
 
 func handleWS(cfg Config) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		ip := GetIP(r)
+		if !isOriginAllowed(cfg, r.Header.Get("Origin")) {
+			http.Error(w, "origin not allowed", http.StatusForbidden)
+			return
+		}
+		if !hasValidClientToken(cfg, r) {
+			http.Error(w, "invalid client token", http.StatusUnauthorized)
+			return
+		}
 
+		ip := GetIP(r)
 		if !globalState.IncrWSCount(ip, cfg.WSMaxPerIP) {
 			http.Error(w, "too many connections", http.StatusTooManyRequests)
 			return
 		}
 		defer globalState.DecrWSCount(ip)
+
+		upgrader := websocket.Upgrader{
+			CheckOrigin: func(req *http.Request) bool {
+				return isOriginAllowed(cfg, req.Header.Get("Origin"))
+			},
+			ReadBufferSize:  1024,
+			WriteBufferSize: 1024,
+		}
 
 		conn, err := upgrader.Upgrade(w, r, nil)
 		if err != nil {
@@ -110,37 +116,34 @@ func handleWS(cfg Config) http.HandlerFunc {
 		}
 		defer conn.Close()
 
-		// 限制单条消息大小 8KB
 		conn.SetReadLimit(8192)
 
 		roomID := r.URL.Query().Get("room_id")
 		room, ok := globalState.GetRoom(roomID)
 		if !ok {
-			conn.WriteJSON(map[string]any{"type": "error", "message": "room not found"})
+			_ = conn.WriteJSON(map[string]any{"type": "error", "message": "room not found"})
 			return
 		}
 
-		// 等待 hello 消息
 		conn.SetReadDeadline(time.Now().Add(10 * time.Second))
 		var hello WSMessage
 		if err := conn.ReadJSON(&hello); err != nil || hello.Type != "hello" {
-			conn.WriteJSON(map[string]any{"type": "error", "message": "expected hello"})
+			_ = conn.WriteJSON(map[string]any{"type": "error", "message": "expected hello"})
 			return
 		}
 		conn.SetReadDeadline(time.Time{})
 
 		if err := validateName(hello.Name); err != nil {
-			conn.WriteJSON(map[string]any{"type": "error", "message": err.Error()})
+			_ = conn.WriteJSON(map[string]any{"type": "error", "message": err.Error()})
 			return
 		}
 		if hello.ClientID == "" {
-			conn.WriteJSON(map[string]any{"type": "error", "message": "client_id required"})
+			_ = conn.WriteJSON(map[string]any{"type": "error", "message": "client_id required"})
 			return
 		}
 
 		clientID := hello.ClientID
 		sid := hello.Name + "_" + uuid.New().String()[:6]
-
 		member := &Member{
 			SID:      sid,
 			ClientID: clientID,
@@ -149,26 +152,22 @@ func handleWS(cfg Config) http.HandlerFunc {
 		}
 
 		room.Lock()
-
 		isHostReconnect := room.HostReconnecting && room.HostClientID == clientID
 		isFirstMember := room.HostSID == "" && !room.HostReconnecting
 
 		if !isFirstMember && !isHostReconnect {
-			// 普通房客加入时：检查是否试图加入自己创建的房间
 			if room.HostClientID == clientID {
 				room.Unlock()
-				conn.WriteJSON(map[string]any{"type": "error", "message": "cannot join your own room"})
+				_ = conn.WriteJSON(map[string]any{"type": "error", "message": "cannot join your own room"})
 				return
 			}
-			// 检查人数上限（不含正在重连的房主空位）
 			if len(room.Members) >= MaxRoomMembers {
 				room.Unlock()
-				conn.WriteJSON(map[string]any{"type": "error", "message": "room full"})
+				_ = conn.WriteJSON(map[string]any{"type": "error", "message": "room full"})
 				return
 			}
 		}
 
-		// 检查同 clientId 是否已有连接（踢旧连接）
 		if oldSID, exists := room.ClientIDs[clientID]; exists {
 			if oldMember, ok := room.Members[oldSID]; ok {
 				log.Info().Str("room_id", roomID).Str("client_id", clientID).Msg("kicking old connection for same client")
@@ -178,7 +177,6 @@ func handleWS(cfg Config) http.HandlerFunc {
 			}
 		}
 
-		// 注册新连接
 		room.ClientIDs[clientID] = sid
 		room.Members[sid] = member
 
@@ -188,7 +186,6 @@ func handleWS(cfg Config) http.HandlerFunc {
 			room.HostClientID = clientID
 			isHost = true
 		} else if isHostReconnect {
-			// 房主重连
 			room.HostSID = sid
 			isHost = true
 			if room.HostReconnectTimer != nil {
@@ -197,25 +194,20 @@ func handleWS(cfg Config) http.HandlerFunc {
 			}
 			room.HostReconnecting = false
 			log.Info().Str("room_id", roomID).Str("host", hello.Name).Msg("host reconnected")
-		} else {
-			isHost = false
 		}
 
 		room.LastActivity = time.Now()
 		room.Unlock()
 
-		// 发送欢迎消息
-		conn.WriteJSON(map[string]any{
+		_ = member.Send(map[string]any{
 			"type":    "welcome",
 			"sid":     sid,
 			"is_host": isHost,
 			"room_id": roomID,
 		})
 
-		// 广播成员变更
 		room.Lock()
 		if isHostReconnect {
-			// 通知所有房客房主回来了
 			for s, m := range room.Members {
 				if s != sid {
 					_ = m.Send(map[string]any{"type": "host_reconnected", "host_name": hello.Name})
@@ -242,15 +234,14 @@ func handleWS(cfg Config) http.HandlerFunc {
 
 		go func() {
 			for range heartbeatTicker.C {
-				if err := conn.WriteJSON(map[string]any{"type": "ping"}); err != nil {
+				if err := member.Send(map[string]any{"type": "ping"}); err != nil {
 					return
 				}
 			}
 		}()
 
 		conn.SetReadDeadline(time.Now().Add(time.Duration(cfg.HeartbeatTimeout) * time.Second))
-
-		deliberateLeave := false // 区分主动退出 vs 断线
+		deliberateLeave := false
 
 		for {
 			var msg WSMessage
@@ -277,7 +268,6 @@ func handleWS(cfg Config) http.HandlerFunc {
 				}
 
 			case "veto":
-				// 任何人都可以否决（房主也可以否决房客发起的操作）
 				handleVeto(room, member)
 
 			case "catch_up":
@@ -320,7 +310,6 @@ func handleWS(cfg Config) http.HandlerFunc {
 				}
 
 			case "sync_all":
-				// 房主手动同步所有人到当前视频，不改变房间状态
 				if sid == room.HostSID {
 					notifyMsg := map[string]any{
 						"type":      "host_switched",
@@ -339,7 +328,6 @@ func handleWS(cfg Config) http.HandlerFunc {
 				}
 
 			case "host_transferred":
-				// 房主将房间转移到新地址，广播给所有房客
 				if sid == room.HostSID && msg.NewToken != "" {
 					transferMsg := map[string]any{
 						"type":      "host_transferred",
@@ -368,72 +356,67 @@ func handleWS(cfg Config) http.HandlerFunc {
 	cleanup:
 		room.Lock()
 
-		// 如果该成员已经被踢走（同 clientId 新连接已替换），跳过清理
 		currentSID, clientStillRegistered := room.ClientIDs[clientID]
 		if !clientStillRegistered || currentSID != sid {
 			room.Unlock()
-			goto done
+			metricWSDisconnects.Inc()
+			UpdateGauges()
+			return
 		}
 
-		{
-			delete(room.Members, sid)
-			delete(room.ClientIDs, clientID)
-			wasHost := room.HostSID == sid
+		delete(room.Members, sid)
+		delete(room.ClientIDs, clientID)
+		wasHost := room.HostSID == sid
 
-			if wasHost {
-				if deliberateLeave || len(room.Members) == 0 {
-					// 主动退出或无成员 → 立刻解散房间
-					for _, m := range room.Members {
-						_ = m.Send(map[string]any{"type": "room_lost", "host_name": hello.Name})
-					}
-					room.Unlock()
-					globalState.DeleteRoom(roomID)
-					log.Info().Str("room_id", roomID).Str("host", hello.Name).Bool("deliberate", deliberateLeave).Msg("room dissolved: host left")
-				} else {
-					// 断线 → 给房主 HostReconnectWindow 时间重连
-					room.HostSID = ""
-					room.HostReconnecting = true
-					hostName := hello.Name
-
-					for _, m := range room.Members {
-						_ = m.Send(map[string]any{
-							"type":      "host_reconnecting",
-							"host_name": hostName,
-						})
-					}
-
-					roomCopy := room
-					room.HostReconnectTimer = time.AfterFunc(HostReconnectWindow, func() {
-						roomCopy.Lock()
-						if !roomCopy.HostReconnecting {
-							roomCopy.Unlock()
-							return
-						}
-						// 超时，解散房间
-						for _, m := range roomCopy.Members {
-							_ = m.Send(map[string]any{"type": "room_lost", "host_name": hostName})
-						}
-						roomCopy.Unlock()
-						globalState.DeleteRoom(roomID)
-						log.Info().Str("room_id", roomID).Msg("room dissolved: host reconnect timeout")
-					})
-
-					room.Unlock()
-					log.Info().Str("room_id", roomID).Str("host", hello.Name).Dur("window", HostReconnectWindow).Msg("host disconnected, waiting for reconnect")
+		if wasHost {
+			if deliberateLeave || len(room.Members) == 0 {
+				for _, m := range room.Members {
+					_ = m.Send(map[string]any{"type": "room_lost", "host_name": hello.Name})
 				}
-			} else {
-				room.Broadcast(map[string]any{
-					"type": "member_left",
-					"sid":  sid,
-					"name": hello.Name,
-				}, "")
-				broadcastMemberList(room)
 				room.Unlock()
-				log.Info().Str("room_id", roomID).Str("member", hello.Name).Msg("member left")
+				globalState.DeleteRoom(roomID)
+				log.Info().Str("room_id", roomID).Str("host", hello.Name).Bool("deliberate", deliberateLeave).Msg("room dissolved: host left")
+			} else {
+				room.HostSID = ""
+				room.HostReconnecting = true
+				hostName := hello.Name
+
+				for _, m := range room.Members {
+					_ = m.Send(map[string]any{
+						"type":      "host_reconnecting",
+						"host_name": hostName,
+					})
+				}
+
+				roomCopy := room
+				room.HostReconnectTimer = time.AfterFunc(HostReconnectWindow, func() {
+					roomCopy.Lock()
+					if !roomCopy.HostReconnecting {
+						roomCopy.Unlock()
+						return
+					}
+					for _, m := range roomCopy.Members {
+						_ = m.Send(map[string]any{"type": "room_lost", "host_name": hostName})
+					}
+					roomCopy.Unlock()
+					globalState.DeleteRoom(roomID)
+					log.Info().Str("room_id", roomID).Msg("room dissolved: host reconnect timeout")
+				})
+
+				room.Unlock()
+				log.Info().Str("room_id", roomID).Str("host", hello.Name).Dur("window", HostReconnectWindow).Msg("host disconnected, waiting for reconnect")
 			}
+		} else {
+			room.Broadcast(map[string]any{
+				"type": "member_left",
+				"sid":  sid,
+				"name": hello.Name,
+			}, "")
+			broadcastMemberList(room)
+			room.Unlock()
+			log.Info().Str("room_id", roomID).Str("member", hello.Name).Msg("member left")
 		}
 
-	done:
 		metricWSDisconnects.Inc()
 		UpdateGauges()
 	}
@@ -469,10 +452,9 @@ func handleSyncAction(room *Room, sender *Member, msg WSMessage, cfg Config) {
 			"type":          "sync_opportunity",
 			"action":        action,
 			"seek_time":     seekTime,
-			"host_name":     sender.Name, // 发起人（可能是房客）
+			"host_name":     sender.Name,
 			"delay_seconds": room.VetoSeconds,
 		}
-		// 发给除发起人外所有成员（含房主）
 		for sid, m := range room.Members {
 			if sid != sender.SID {
 				_ = m.Send(syncMsg)
@@ -491,8 +473,7 @@ func handleSyncAction(room *Room, sender *Member, msg WSMessage, cfg Config) {
 				return
 			}
 			r.PendingAction = nil
-			// seek 动作：使用发起人请求的原始时间点，防止被房主 position_update 覆盖后丢失进度
-			// play/pause 动作：使用当前房间状态
+
 			seekTarget := r.CurrentTime
 			if pa.Action == "seek" {
 				seekTarget = pa.SeekTime
@@ -504,7 +485,7 @@ func handleSyncAction(room *Room, sender *Member, msg WSMessage, cfg Config) {
 				"paused":    r.Paused,
 			}
 			for sid, m := range r.Members {
-				if sid != pa.SenderSID { // 发起人已经在该位置，跳过
+				if sid != pa.SenderSID {
 					_ = m.Send(catchUpMsg)
 				}
 			}
@@ -515,8 +496,6 @@ func handleSyncAction(room *Room, sender *Member, msg WSMessage, cfg Config) {
 	executeSyncAction(room, action, seekTime, sender.SID)
 }
 
-// executeSyncAction 向除发起人外的所有成员发送同步指令。
-// 调用方必须已持有 room.Lock()（写锁）。
 func executeSyncAction(room *Room, action string, seekTime float64, senderSID string) {
 	msg := map[string]any{
 		"type":      "sync_apply",
@@ -524,7 +503,7 @@ func executeSyncAction(room *Room, action string, seekTime float64, senderSID st
 		"seek_time": seekTime,
 	}
 	for sid, m := range room.Members {
-		if sid == senderSID { // 跳过发起人，其余所有人（含房主）都同步
+		if sid == senderSID {
 			continue
 		}
 		_ = m.Send(msg)

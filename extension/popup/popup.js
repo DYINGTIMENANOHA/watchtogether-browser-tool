@@ -16,20 +16,24 @@ function setStatusDot(state) {
 
 async function getServerUrl() {
   return new Promise(r => chrome.storage.local.get({ serverUrl: '' }, s => {
-    // 空字符串 = 用户未设置，使用代码默认
     r(s.serverUrl || DEFAULT_SERVER);
   }));
 }
+async function getServerToken() {
+  return new Promise(r => chrome.storage.local.get({ serverToken: '' }, s => r(s.serverToken || '')));
+}
 async function apiPost(path, data) {
-  const url = await getServerUrl();
+  const [url, token] = await Promise.all([getServerUrl(), getServerToken()]);
+  const headers = { 'Content-Type': 'application/json' };
+  if (token) headers['X-WT-Client-Token'] = token;
   const res = await fetch(`${url}/wt${path}`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers,
     body: JSON.stringify(data),
   });
   if (!res.ok) {
     const e = await res.json().catch(() => ({}));
-    throw new Error(e.error || `请求失败(${res.status})`);
+    throw new Error(e.error || `Request failed (${res.status})`);
   }
   return res.json();
 }
@@ -47,13 +51,12 @@ async function getCurrentVideoInfo() {
       } else if (url.includes('bilibili.com/video/')) {
         const m = url.match(/\/video\/((?:BV|AV|av|bv)\w+)/i);
         if (m) {
-          // BV ID 大小写敏感，只规范化前缀
           videoId = m[1].slice(0, 2).toUpperCase() + m[1].slice(2);
         }
         platform = 'bilibili';
       }
       if (!videoId) { resolve(null); return; }
-      const title = (tab.title || '').replace(' - YouTube', '').replace('_哔哩哔哩_bilibili', '');
+      const title = (tab.title || '').replace(' - YouTube', '').replace('_\u54d4\u54e9\u54d4\u54e9_bilibili', '');
       let done = false;
       const t = setTimeout(() => {
         if (!done) { done = true; resolve({ videoId, platform, title, currentTime: 0, paused: true, isLive: false, tabId: tab.id }); }
@@ -84,10 +87,8 @@ function saveRoomSettings(s) { chrome.storage.local.set(s); }
 function getInviteLink(videoId, platform, token) {
   if (!videoId || !platform || !token) return '';
   if (platform === 'youtube') {
-    // YouTube: hash 安全，不影响路由
     return `https://www.youtube.com/watch?v=${videoId}#wt-code=${token}`;
   }
-  // Bilibili: 用 query 参数，hash 会被 B 站 SPA 路由拦截导致"视频不存在"
   return `https://www.bilibili.com/video/${videoId}/?wt_code=${token}`;
 }
 
@@ -100,7 +101,7 @@ function renderMemberList(members, listId, countId) {
   list.innerHTML = members.map(m =>
     `<div class="member-item${m.is_host ? ' host' : ''}">
       <span class="member-dot"></span>
-      <span class="member-name">${escHtml(m.name)}${m.is_host ? ' 👑' : ''}</span>
+      <span class="member-name">${escHtml(m.name)}${m.is_host ? ' H' : ''}</span>
     </div>`
   ).join('');
 }
@@ -109,7 +110,6 @@ function escHtml(s) {
   return (s || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 }
 
-// ── 首次运行检测 ──────────────────────────────────
 async function checkFirstRun() {
   return new Promise(r => {
     chrome.storage.local.get({ firstRun: false, nickname: '' }, s => {
@@ -123,12 +123,10 @@ let videoInfo = null;
 let currentRoomData = null;
 
 async function init() {
-  // 先加载语言，再渲染任何文字
   const lang = await new Promise(r => chrome.storage.local.get({ lang: 'en' }, s => r(s.lang || 'en')));
   setLang(lang);
   applyI18n();
 
-  // 首次运行引导
   const isFirstRun = await checkFirstRun();
   if (isFirstRun) {
     showView('firstrun');
@@ -149,7 +147,7 @@ async function init() {
       renderHistory();
       if (videoInfo) {
         $('video-title').textContent = videoInfo.title || videoInfo.videoId;
-        $('video-meta').textContent = (videoInfo.platform === 'youtube' ? 'YouTube' : 'Bilibili') + (videoInfo.isLive ? ' · ' + t('live') : '');
+        $('video-meta').textContent = (videoInfo.platform === 'youtube' ? 'YouTube' : 'Bilibili') + (videoInfo.isLive ? '  -  ' + t('live') : '');
         $('btn-create').disabled = false;
         $('btn-create').style.opacity = '1';
       } else {
@@ -172,9 +170,8 @@ async function showRoomView(room, wsState) {
     $('host-panel').style.display = '';
     $('guest-panel').style.display = 'none';
 
-    $('token-display').textContent = room.token || '—';
+    $('token-display').textContent = room.token || '-';
 
-    // 邀请链接
     const link = getInviteLink(room.videoId, room.platform, room.token);
     $('link-display').textContent = link || t('invite_link_none');
     $('link-display').title = link || '';
@@ -191,7 +188,7 @@ async function showRoomView(room, wsState) {
   } else {
     $('host-panel').style.display = 'none';
     $('guest-panel').style.display = '';
-    $('host-name-display').textContent = room.hostName || '—';
+    $('host-name-display').textContent = room.hostName || '-';
     renderMemberList(room.members || [], 'guest-member-list', 'guest-member-count');
     startMemberRefresh();
   }
@@ -204,13 +201,11 @@ function startMemberRefresh() {
   clearInterval(memberRefreshTimer);
   clearTimeout(connectionCheckTimer);
 
-  // 3 秒超时：若仍未连接则显示失败提示
   connectionCheckTimer = setTimeout(() => {
     chrome.runtime.sendMessage({ type: 'get_status' }, res => {
-      if (res?.wsState === 'connected') return; // 已连上，忽略
-      if (!res?.currentRoom) return; // 已退出
+      if (res?.wsState === 'connected') return;
+      if (!res?.currentRoom) return;
       setStatusDot('disconnected');
-      // 在 error-msg 区显示提示（room 视图没有 error-msg，用 status-text）
       const el = $('status-text');
       if (el) el.textContent = t('conn_fail_retry');
     });
@@ -229,7 +224,6 @@ function startMemberRefresh() {
   }, 3000);
 }
 
-// ── 首次运行 ──────────────────────────────────────
 $('btn-firstrun-save').addEventListener('click', () => {
   const nick = $('firstrun-nick').value.trim();
   if (!nick) { $('firstrun-err').textContent = t('firstrun_err_empty'); return; }
@@ -241,7 +235,6 @@ $('btn-firstrun-save').addEventListener('click', () => {
 });
 $('firstrun-nick').addEventListener('keydown', e => { if (e.key === 'Enter') $('btn-firstrun-save').click(); });
 
-// ── 创建房间 ──────────────────────────────────────
 $('btn-create').addEventListener('click', async () => {
   if (!videoInfo) return;
   $('btn-create').disabled = true; $('btn-create').textContent = t('creating'); setError('');
@@ -276,7 +269,6 @@ $('btn-create').addEventListener('click', async () => {
   }
 });
 
-// ── 加入房间 ──────────────────────────────────────
 $('btn-join').addEventListener('click', async () => {
   const token = $('input-token').value.trim();
   if (!token) { setError(t('err_enter_code')); return; }
@@ -302,7 +294,6 @@ $('btn-join').addEventListener('click', async () => {
         title: info.title || '',
       });
       showRoomView({ isHost: false, roomId: info.room_id, hostName: info.host_name, platform: info.platform, members: [] }, 'connecting');
-      // 跳转到视频
       if (tab && info.video_id && !info.host_searching) {
         const url = info.platform === 'youtube'
           ? `https://www.youtube.com/watch?v=${info.video_id}`
@@ -317,7 +308,6 @@ $('btn-join').addEventListener('click', async () => {
   }
 });
 
-// ── 复制 ──────────────────────────────────────────
 $('btn-copy-token').addEventListener('click', () => {
   const val = $('token-display').textContent;
   navigator.clipboard.writeText(val).then(() => {
@@ -328,14 +318,13 @@ $('btn-copy-token').addEventListener('click', () => {
 
 $('btn-copy-link').addEventListener('click', () => {
   const link = $('link-display').title || $('link-display').textContent;
-  if (!link || link.startsWith('（')) return;
+  if (!link || link.startsWith('(')) return;
   navigator.clipboard.writeText(link).then(() => {
     $('btn-copy-link').textContent = t('copied');
     setTimeout(() => { $('btn-copy-link').textContent = t('copy'); }, 2000);
   });
 });
 
-// ── 离开 ──────────────────────────────────────────
 $('btn-leave').addEventListener('click', () => {
   clearInterval(memberRefreshTimer);
   chrome.runtime.sendMessage({ type: 'leave_room' }, () => {
@@ -352,7 +341,6 @@ $('btn-sync-all').addEventListener('click', () => {
   if (btn) { btn.disabled = true; setTimeout(() => { btn.disabled = false; }, 3000); }
 });
 
-// ── 设置开关 ──────────────────────────────────────
 $('toggle-veto').addEventListener('change', e => {
   const enabled = e.target.checked;
   const seconds = parseInt($('input-veto-seconds').value) || 5;
@@ -374,7 +362,6 @@ $('toggle-guest-control').addEventListener('change', e => {
 
 $('input-token').addEventListener('keydown', e => { if (e.key === 'Enter') $('btn-join').click(); });
 
-// ── 历史房间 ──────────────────────────────────────
 async function renderHistory() {
   const { joinHistory = [] } = await new Promise(r => chrome.storage.local.get({ joinHistory: [] }, r));
   const section = $('history-section');
@@ -390,12 +377,12 @@ async function renderHistory() {
         <div class="history-info">
           <span class="history-dot" id="hd-${i}" title="${t('history_checking')}"></span>
           <div class="history-text">
-            <div class="history-host">${escHtml(entry.hostName || '—')}</div>
-            <div class="history-sub">${subText} · ${timeAgo(entry.joinedAt)}</div>
+            <div class="history-host">${escHtml(entry.hostName || '-')}</div>
+            <div class="history-sub">${subText}  -  ${timeAgo(entry.joinedAt)}</div>
           </div>
         </div>
         <div class="history-actions">
-          <button class="btn-icon" id="hcopy-${i}" title="${t('history_copy_code')}">⎘</button>
+          <button class="btn-icon" id="hcopy-${i}" title="${t('history_copy_code')}">Copy</button>
           <button class="history-join" id="hjoin-${i}">${t('history_join_btn')}</button>
         </div>
       </div>`;
@@ -406,8 +393,8 @@ async function renderHistory() {
       navigator.clipboard.writeText(entry.token).then(() => {
         const btn = $(`hcopy-${i}`);
         if (!btn) return;
-        btn.textContent = '✓';
-        setTimeout(() => { btn.textContent = '⎘'; }, 1500);
+        btn.textContent = 'OK';
+        setTimeout(() => { btn.textContent = 'Copy'; }, 1500);
       });
     });
     $(`hjoin-${i}`)?.addEventListener('click', () => {
@@ -416,11 +403,12 @@ async function renderHistory() {
     });
   });
 
-  // 并行检查在线状态
-  const serverUrl = await getServerUrl();
+  const [serverUrl, serverToken] = await Promise.all([getServerUrl(), getServerToken()]);
+  const headers = {};
+  if (serverToken) headers['X-WT-Client-Token'] = serverToken;
   const checks = joinHistory.map((entry, i) =>
     fetch(`${serverUrl}/wt/room/check?token=${encodeURIComponent(entry.token)}`,
-      { signal: AbortSignal.timeout(5000) })
+      { headers, signal: AbortSignal.timeout(5000) })
       .then(r => r.json())
       .then(data => ({ i, exists: !!data.exists }))
       .catch(() => ({ i, exists: false }))

@@ -8,13 +8,13 @@
 <body>
 
 <div class="header">
-  <span class="logo">▶ WatchTogether</span>
-  <a href="../settings/settings.html" target="_blank" class="settings-btn" title="Settings">⚙</a>
+  <span class="logo">> WatchTogether</span>
+  <a href="../settings/settings.html" target="_blank" class="settings-btn" title="Settings">Settings</a>
 </div>
 
-<!-- 首次引导 -->
+<!-- First-run view -->
 <div id="view-firstrun" class="view" style="display:none">
-  <div class="firstrun-icon">👋</div>
+  <div class="firstrun-icon">Hi</div>
   <div class="firstrun-title" data-i18n="firstrun_title">Welcome to WatchTogether</div>
   <div class="firstrun-desc" data-i18n="firstrun_desc">Set a nickname to get started</div>
   <input type="text" id="firstrun-nick" data-i18n="firstrun_nick_placeholder" placeholder="Your nickname" maxlength="20" autocomplete="off">
@@ -22,10 +22,10 @@
   <div class="error-msg" id="firstrun-err"></div>
 </div>
 
-<!-- 未在房间 -->
+<!-- Idle view -->
 <div id="view-idle" class="view" style="display:none">
   <div class="video-info">
-    <div class="video-title" id="video-title">—</div>
+    <div class="video-title" id="video-title">-</div>
     <div class="video-meta" id="video-meta"></div>
   </div>
   <button class="btn btn-primary" id="btn-create" data-i18n="create_room">Create Room</button>
@@ -36,30 +36,30 @@
   </div>
   <div class="error-msg" id="error-msg"></div>
 
-  <!-- 历史房间 -->
+  <!-- Room history -->
   <div id="history-section" style="display:none">
     <div class="history-header" data-i18n="history_title">Recent Rooms</div>
     <div id="history-list"></div>
   </div>
 </div>
 
-<!-- 在房间中 -->
+<!-- In-room view -->
 <div id="view-room" class="view" style="display:none">
   <div class="room-status">
     <div class="status-dot" id="status-dot"></div>
     <span id="status-text" data-i18n="status_syncing">Syncing</span>
   </div>
 
-  <!-- 房主面板 -->
+  <!-- Host panel -->
   <div id="host-panel" style="display:none">
     <div class="token-box">
       <span class="token-label" data-i18n="invite_code_label">Invite Code</span>
-      <span class="token-value" id="token-display">—</span>
+      <span class="token-value" id="token-display">-</span>
       <button class="btn-copy" id="btn-copy-token" data-i18n="copy">Copy</button>
     </div>
     <div class="link-box">
       <span class="token-label" data-i18n="invite_link_label">Invite Link</span>
-      <span class="link-value" id="link-display">—</span>
+      <span class="link-value" id="link-display">-</span>
       <button class="btn-copy" id="btn-copy-link" data-i18n="copy">Copy</button>
     </div>
 
@@ -96,17 +96,17 @@
     <button class="btn btn-sm" id="btn-sync-all" data-i18n="sync_all_btn" style="width:100%;margin-top:4px;display:none">Sync All</button>
   </div>
 
-  <!-- 房客面板 -->
+  <!-- Guest panel -->
   <div id="guest-panel" style="display:none">
-    <div class="host-name"><span data-i18n="host_name_prefix">Host:</span> <span id="host-name-display">—</span></div>
+    <div class="host-name"><span data-i18n="host_name_prefix">Host:</span> <span id="host-name-display">-</span></div>
     <div class="member-section">
       <div class="member-header">
         <span class="member-title" data-i18n="members_title">Members</span>
-        <span class="member-count" id="guest-member-count">—/5</span>
+        <span class="member-count" id="guest-member-count">-/5</span>
       </div>
       <div class="member-list" id="guest-member-list"></div>
     </div>
-    <button class="btn btn-sm" id="btn-catch-up" data-i18n="catch_up_btn">🏃 Catch Up</button>
+    <button class="btn btn-sm" id="btn-catch-up" data-i18n="catch_up_btn"> Catch Up</button>
   </div>
 
   <button class="btn btn-danger" id="btn-leave" data-i18n="leave_btn">Leave Room</button>

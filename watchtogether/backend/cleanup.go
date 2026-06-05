@@ -6,7 +6,6 @@ import (
 	"github.com/rs/zerolog/log"
 )
 
-// StartCleanup 启动后台清理任务
 func StartCleanup(cfg Config) {
 	go func() {
 		ticker := time.NewTicker(time.Minute)
@@ -17,7 +16,6 @@ func StartCleanup(cfg Config) {
 		}
 	}()
 
-	// 每天凌晨重置统计计数
 	go func() {
 		for {
 			now := time.Now()
@@ -42,7 +40,6 @@ func cleanExpiredRooms(cfg Config) {
 		roomID := room.RoomID
 		room.RUnlock()
 
-		// 无成员且超过 TTL 的空房间
 		if memberCount == 0 && now.Sub(lastActivity) > time.Duration(cfg.RoomTTLMinutes)*time.Minute {
 			globalState.DeleteRoom(roomID)
 			cleaned++

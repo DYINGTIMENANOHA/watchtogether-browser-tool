@@ -7,17 +7,15 @@ import (
 )
 
 type State struct {
-	rooms   map[string]*Room
-	tokens  map[string]string // token → room_id
-	mu      sync.RWMutex
+	rooms  map[string]*Room
+	tokens map[string]string
+	mu     sync.RWMutex
 
-	// IP 相关计数
-	ipRateLimit  map[string]*ipCounter  // IP → 创建房间计数
-	ipTokenFail  map[string]*ipBanInfo  // IP → token 失败计数
-	ipWSCount    map[string]int         // IP → 当前WS连接数
-	ipMu         sync.Mutex
+	ipRateLimit map[string]*ipCounter
+	ipTokenFail map[string]*ipBanInfo
+	ipWSCount   map[string]int
+	ipMu        sync.Mutex
 
-	// 统计计数（原子操作）
 	roomsCreatedToday atomic.Int64
 	roomsJoinedToday  atomic.Int64
 	startTime         time.Time
@@ -34,15 +32,14 @@ type ipBanInfo struct {
 }
 
 var globalState = &State{
-	rooms:        make(map[string]*Room),
-	tokens:       make(map[string]string),
-	ipRateLimit:  make(map[string]*ipCounter),
-	ipTokenFail:  make(map[string]*ipBanInfo),
-	ipWSCount:    make(map[string]int),
-	startTime:    time.Now(),
+	rooms:       make(map[string]*Room),
+	tokens:      make(map[string]string),
+	ipRateLimit: make(map[string]*ipCounter),
+	ipTokenFail: make(map[string]*ipBanInfo),
+	ipWSCount:   make(map[string]int),
+	startTime:   time.Now(),
 }
 
-// AddRoom 添加房间
 func (s *State) AddRoom(room *Room) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -50,7 +47,6 @@ func (s *State) AddRoom(room *Room) {
 	s.tokens[room.Token] = room.RoomID
 }
 
-// GetRoom 通过 room_id 获取房间
 func (s *State) GetRoom(roomID string) (*Room, bool) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -58,7 +54,6 @@ func (s *State) GetRoom(roomID string) (*Room, bool) {
 	return r, ok
 }
 
-// GetRoomByToken 通过 token 获取房间
 func (s *State) GetRoomByToken(token string) (*Room, bool) {
 	s.mu.RLock()
 	roomID, ok := s.tokens[token]
@@ -69,7 +64,6 @@ func (s *State) GetRoomByToken(token string) (*Room, bool) {
 	return s.GetRoom(roomID)
 }
 
-// DeleteRoom 删除房间
 func (s *State) DeleteRoom(roomID string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -79,14 +73,12 @@ func (s *State) DeleteRoom(roomID string) {
 	}
 }
 
-// RoomCount 当前房间数
 func (s *State) RoomCount() int {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return len(s.rooms)
 }
 
-// ConnectionCount 当前总连接数
 func (s *State) ConnectionCount() int {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -99,7 +91,6 @@ func (s *State) ConnectionCount() int {
 	return total
 }
 
-// CheckRateLimit 检查 IP 创建房间频率，返回是否允许
 func (s *State) CheckRateLimit(ip string, limitPerMin int) bool {
 	s.ipMu.Lock()
 	defer s.ipMu.Unlock()
@@ -116,7 +107,6 @@ func (s *State) CheckRateLimit(ip string, limitPerMin int) bool {
 	return true
 }
 
-// CheckTokenBan 检查 IP 是否被封禁，记录失败
 func (s *State) CheckTokenBan(ip string, maxFail, banMinutes int) bool {
 	s.ipMu.Lock()
 	defer s.ipMu.Unlock()
@@ -128,13 +118,16 @@ func (s *State) CheckTokenBan(ip string, maxFail, banMinutes int) bool {
 	if now.Before(info.banUntil) {
 		return false
 	}
+	if !info.banUntil.IsZero() {
+		delete(s.ipTokenFail, ip)
+		return true
+	}
 	if info.failCount >= maxFail {
 		return false
 	}
 	return true
 }
 
-// RecordTokenFail 记录 token 验证失败
 func (s *State) RecordTokenFail(ip string, maxFail, banMinutes int) {
 	s.ipMu.Lock()
 	defer s.ipMu.Unlock()
@@ -149,14 +142,12 @@ func (s *State) RecordTokenFail(ip string, maxFail, banMinutes int) {
 	}
 }
 
-// RecordTokenSuccess 清除 token 失败记录
 func (s *State) RecordTokenSuccess(ip string) {
 	s.ipMu.Lock()
 	defer s.ipMu.Unlock()
 	delete(s.ipTokenFail, ip)
 }
 
-// IncrWSCount 增加 IP 的 WS 连接数，返回是否允许
 func (s *State) IncrWSCount(ip string, max int) bool {
 	s.ipMu.Lock()
 	defer s.ipMu.Unlock()
@@ -167,7 +158,6 @@ func (s *State) IncrWSCount(ip string, max int) bool {
 	return true
 }
 
-// DecrWSCount 减少 IP 的 WS 连接数
 func (s *State) DecrWSCount(ip string) {
 	s.ipMu.Lock()
 	defer s.ipMu.Unlock()
@@ -176,7 +166,6 @@ func (s *State) DecrWSCount(ip string) {
 	}
 }
 
-// AllRooms 返回所有房间快照（用于清理）
 func (s *State) AllRooms() []*Room {
 	s.mu.RLock()
 	defer s.mu.RUnlock()

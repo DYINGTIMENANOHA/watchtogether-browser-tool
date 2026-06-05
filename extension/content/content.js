@@ -3,11 +3,10 @@ const isYouTube = location.hostname.includes('youtube.com');
 const isBilibili = location.hostname.includes('bilibili.com');
 let adapter = isYouTube ? new YouTubeAdapter() : isBilibili ? new BilibiliAdapter() : null;
 
-// ── 状态 ──────────────────────────────────────────
 let isInRoom = false;
 let isHost = false;
 let isActiveTab = false;
-let hostSearching = false;    // 房主正在找视频
+let hostSearching = false;
 let suppressEvents = false;
 let currentMembers = [];
 let currentHostName = '';
@@ -15,20 +14,17 @@ let currentToken = '';
 let currentVideoId = '';
 let currentPlatform = '';
 
-// ── UI 元素引用 ───────────────────────────────────
 let shadowHost = null;
 let shadowRoot = null;
 let bubble = null;
 let panel = null;
 let panelVisible = false;
-let bubbleHidden = false;  // 当次隐藏状态（不保存）
+let bubbleHidden = false;
 
-// banner 引用
 let vetoBanner = null, vetoTimerId = null;
 let switchBanner = null, switchTimerId = null;
 let infoBanner = null, infoTimerId = null;
 
-// ── Shadow DOM 初始化 ─────────────────────────────
 function initOverlay() {
   shadowHost = document.createElement('div');
   shadowHost.id = '__wt_host__';
@@ -49,7 +45,6 @@ function getStyles() {
   return `
     *{box-sizing:border-box;margin:0;padding:0;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;}
 
-    /* ── 悬浮圆圈 ── */
     .wt-bubble{
       position:fixed;right:0;top:50%;transform:translateY(-50%);
       width:48px;height:48px;border-radius:50% 0 0 50%;
@@ -72,7 +67,6 @@ function getStyles() {
     .wt-bubble:hover .wt-bubble-close{display:block;}
     @keyframes wt-pulse{to{opacity:.5;}}
 
-    /* ── 面板 ── */
     .wt-panel{
       position:fixed;right:52px;top:50%;transform:translateY(-50%);
       background:#1e1e1e;color:#f0f0f0;border-radius:12px;
@@ -123,7 +117,6 @@ function getStyles() {
     .wt-subsection{background:#1a1a1a;border-radius:6px;padding:6px 8px;margin-bottom:8px;}
     .wt-num-input{background:#111;border:1px solid #444;color:#fff;border-radius:4px;padding:2px 5px;font-size:12px;width:40px;}
 
-    /* ── 通知 banner ── */
     .wt-banners{position:fixed;top:64px;left:50%;transform:translateX(-50%);display:flex;flex-direction:column;gap:8px;pointer-events:auto;min-width:320px;max-width:500px;z-index:1;}
     .wt-banner{
       background:rgba(22,22,22,.95);color:#fff;font-size:13px;
@@ -148,11 +141,11 @@ function createBubble() {
   bubble = document.createElement('div');
   bubble.className = 'wt-bubble';
   bubble.innerHTML = `
-    <div class="wt-bubble-icon">▶</div>
+    <div class="wt-bubble-icon">></div>
     <div class="wt-bubble-label">${t('bubble_sync')}</div>
-    <button class="wt-bubble-close" title="${t('bubble_close_title')}">×</button>
+    <button class="wt-bubble-close" title="${t('bubble_close_title')}">x</button>
   `;
-  bubble.style.display = 'none'; // 等待 showBubble 设置显示
+  bubble.style.display = 'none';
 
   bubble.addEventListener('click', (e) => {
     if (e.target.classList.contains('wt-bubble-close')) {
@@ -180,7 +173,6 @@ function createBannerContainer() {
 
 function getBanners() { return shadowRoot.getElementById('wt-banners'); }
 
-// ── 悬浮圆圈状态 ──────────────────────────────────
 function updateBubble() {
   if (!bubble) return;
   chrome.storage.local.get({ showBubble: true }, ({ showBubble }) => {
@@ -195,15 +187,15 @@ function updateBubble() {
 
     if (!isInRoom) {
       bubble.className = 'wt-bubble';
-      iconEl.textContent = '▶';
+      iconEl.textContent = '>';
       labelEl.textContent = t('bubble_sync');
     } else if (hostSearching && !isHost) {
       bubble.className = 'wt-bubble host-searching';
-      iconEl.textContent = '🔍';
+      iconEl.textContent = '?';
       labelEl.textContent = t('bubble_searching');
     } else {
       bubble.className = 'wt-bubble in-room';
-      iconEl.textContent = isHost ? '👑' : '▶';
+      iconEl.textContent = isHost ? 'H' : '>';
       labelEl.textContent = isHost ? t('bubble_host') : t('bubble_syncing');
     }
   });
@@ -212,7 +204,7 @@ function updateBubble() {
 function setBubbleReconnecting() {
   if (!bubble) return;
   bubble.className = 'wt-bubble reconnecting';
-  bubble.querySelector('.wt-bubble-icon').textContent = '↻';
+  bubble.querySelector('.wt-bubble-icon').textContent = '...';
   bubble.querySelector('.wt-bubble-label').textContent = t('bubble_reconnecting');
 }
 
@@ -222,7 +214,6 @@ function hideBubbleForSession() {
   if (panel) { panel.style.display = 'none'; panelVisible = false; }
 }
 
-// ── 面板 ──────────────────────────────────────────
 function togglePanel() {
   panelVisible = !panelVisible;
   panel.style.display = panelVisible ? '' : 'none';
@@ -251,7 +242,7 @@ function renderIdlePanel() {
   panel.innerHTML = `
     <div class="wt-panel-title">
       ${t('panel_idle_title')}
-      <button class="wt-panel-close" id="wt-pc-close">×</button>
+      <button class="wt-panel-close" id="wt-pc-close">x</button>
     </div>
 
     ${hasVideo ? `
@@ -281,14 +272,12 @@ function renderIdlePanel() {
     panelVisible = false; panel.style.display = 'none';
   });
 
-  // 预填昵称
   chrome.runtime.sendMessage({ type: 'get_nickname' }, r => {
     const nick = r?.nickname || '';
     const n = panel.querySelector('#wt-nick-input');
     if (n) n.value = nick;
   });
 
-  // ── 创建房间 ──────────────────────────────────────
   panel.querySelector('#wt-create-btn')?.addEventListener('click', () => {
     const btn = panel.querySelector('#wt-create-btn');
     const errEl = panel.querySelector('#wt-create-err');
@@ -322,7 +311,7 @@ function renderIdlePanel() {
           token: data.token,
           isHost: true,
           videoId, platform, nickname,
-          tabId: null, // background 会用 sender.tab?.id
+          tabId: null,
         });
         isInRoom = true; isHost = true; isActiveTab = true;
         panelVisible = false; panel.style.display = 'none';
@@ -331,7 +320,6 @@ function renderIdlePanel() {
     });
   });
 
-  // ── 加入房间 ──────────────────────────────────────
   panel.querySelector('#wt-do-join-btn')?.addEventListener('click', () => {
     const btn = panel.querySelector('#wt-do-join-btn');
     const errEl = panel.querySelector('#wt-join-err');
@@ -362,13 +350,11 @@ function renderIdlePanel() {
         joinToken: token,
         title: info.title || '',
       });
-      // 清除 hash
       if (hashCode) history.replaceState(null, '', location.pathname + location.search);
       isInRoom = true; isHost = false; isActiveTab = true;
       currentHostName = info.host_name;
       panelVisible = false; panel.style.display = 'none';
       updateBubble();
-      // 跳转到房主视频
       if (info.video_id && !info.host_searching) {
         const url = info.platform === 'youtube'
           ? `https://www.youtube.com/watch?v=${info.video_id}`
@@ -378,12 +364,10 @@ function renderIdlePanel() {
     });
   });
 
-  // Enter 键触发加入
   panel.querySelector('#wt-code-input')?.addEventListener('keydown', e => {
     if (e.key === 'Enter') panel.querySelector('#wt-do-join-btn')?.click();
   });
 
-  // 历史房间（最多3条，异步加载）
   renderIdlePanelHistory();
 }
 
@@ -404,8 +388,8 @@ function renderIdlePanelHistory() {
         <div style="display:flex;align-items:center;gap:5px;padding:4px 0;border-bottom:1px solid #2a2a2a;">
           <span id="wt-hd-${i}" style="width:6px;height:6px;border-radius:50%;background:#555;flex-shrink:0;display:inline-block;" title="${t('history_checking')}"></span>
           <div style="flex:1;min-width:0;">
-            <div style="font-size:11px;color:#ddd;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${escHtml(entry.hostName || '—')}</div>
-            <div style="font-size:10px;color:#888;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${sub} · ${timeAgo(entry.joinedAt)}</div>
+            <div style="font-size:11px;color:#ddd;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${escHtml(entry.hostName || '-')}</div>
+            <div style="font-size:10px;color:#888;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${sub}  -  ${timeAgo(entry.joinedAt)}</div>
           </div>
           <button class="wt-bbtn" id="wt-hjoin-${i}" style="font-size:10px;padding:3px 7px;">${t('history_join_btn')}</button>
         </div>`;
@@ -419,7 +403,6 @@ function renderIdlePanelHistory() {
       });
     });
 
-    // 检查在线状态
     entries.forEach((entry, i) => {
       chrome.runtime.sendMessage({ type: 'api_check_room', token: entry.token }, res => {
         const dot = panel?.querySelector(`#wt-hd-${i}`);
@@ -442,7 +425,7 @@ function renderHostTransferPanel() {
   panel.innerHTML = `
     <div class="wt-panel-title">
       WatchTogether
-      <button class="wt-panel-close" id="wt-pc-close">×</button>
+      <button class="wt-panel-close" id="wt-pc-close">x</button>
     </div>
     <div class="wt-info" style="margin-bottom:10px;line-height:1.6;">${t('transfer_already_host')}</div>
     ${hasVideo
@@ -500,7 +483,7 @@ function renderHostPanel() {
   panel.innerHTML = `
     <div class="wt-panel-title">
       ${t('panel_host_title')}
-      <button class="wt-panel-close" id="wt-pc-close">×</button>
+      <button class="wt-panel-close" id="wt-pc-close">x</button>
     </div>
     <div class="wt-status-row">
       <div class="wt-dot green" id="wt-status-dot"></div>
@@ -510,7 +493,7 @@ function renderHostPanel() {
     <div class="wt-section">
       <div class="wt-section-label">${t('invite_code_label')}</div>
       <div class="wt-code-row">
-        <span class="wt-code-val">${currentToken || '—'}</span>
+        <span class="wt-code-val">${currentToken || '-'}</span>
         <button class="wt-copy-btn" id="wt-copy-code">${t('copy')}</button>
       </div>
     </div>
@@ -576,7 +559,6 @@ function renderHostPanel() {
     });
   }
 
-  // 加载并初始化设置开关
   chrome.storage.local.get({ vetoEnabled: false, vetoSeconds: 5, allowGuestControl: false }, s => {
     const vetoChk = panel.querySelector('#wt-veto-chk');
     const secRow = panel.querySelector('#wt-veto-sec-row');
@@ -623,13 +605,13 @@ function renderGuestPanel() {
   panel.innerHTML = `
     <div class="wt-panel-title">
       ${t('panel_guest_title')}
-      <button class="wt-panel-close" id="wt-pc-close">×</button>
+      <button class="wt-panel-close" id="wt-pc-close">x</button>
     </div>
     <div class="wt-status-row">
       <div class="wt-dot green" id="wt-status-dot"></div>
       <span id="wt-status-text">${t('panel_status_syncing')}</span>
     </div>
-    <div class="wt-section-label">${t('panel_host_label')} ${escHtml(currentHostName || '—')}</div>
+    <div class="wt-section-label">${t('panel_host_label')} ${escHtml(currentHostName || '-')}</div>
     <div class="wt-members" style="margin-top:8px;">
       <div class="wt-member-header">${t('panel_members_header', { n: currentMembers.length })}</div>
       <div id="wt-member-list">
@@ -657,7 +639,7 @@ function renderMemberItems(members) {
   return members.map(m => `
     <div class="wt-member-item">
       <div class="wt-member-dot ${m.is_host ? 'host' : ''}"></div>
-      <span>${escHtml(m.name)}${m.is_host ? ' 👑' : ''}</span>
+      <span>${escHtml(m.name)}${m.is_host ? ' H' : ''}</span>
     </div>
   `).join('');
 }
@@ -679,7 +661,6 @@ function updateStatusInPanel(status) {
   }
 }
 
-// ── 通用工具 ──────────────────────────────────────
 function copyText(text, btn) {
   navigator.clipboard.writeText(text).then(() => {
     if (btn) { const orig = btn.textContent; btn.textContent = t('copied'); setTimeout(() => { btn.textContent = orig; }, 2000); }
@@ -693,19 +674,17 @@ function escHtml(s) {
 function getVideoTitle() {
   return (document.title || '')
     .replace(/ - YouTube$/, '')
-    .replace(/_哔哩哔哩_bilibili$/, '')
-    .replace(/ - 哔哩哔哩$/, '')
+    .replace(/_\u54d4\u54e9\u54d4\u54e9_bilibili$/, '')
+    .replace(/ - \u54d4\u54e9\u54d4\u54e9$/, '')
     .trim();
 }
 
 function getHashCode() {
-  // YouTube 用 hash，Bilibili 用 query 参数（B站 hash 会被路由拦截）
   const hashMatch = location.hash.match(/[#&]wt-code=([^&]+)/);
   if (hashMatch) return hashMatch[1];
   return new URLSearchParams(location.search).get('wt_code') || null;
 }
 
-// ── 通知 banner ───────────────────────────────────
 function showInfo(text, duration = 4000) {
   const b = getBanners();
   if (!b) return;
@@ -762,7 +741,7 @@ function showSwitchBanner(hostName, videoId, platform, autoLeave = true) {
   clearInterval(switchTimerId); switchTimerId = null;
   switchBanner?.remove(); switchBanner = null;
 
-  let remaining = 30; // 30 秒倒计时
+  let remaining = 30;
   switchBanner = document.createElement('div');
   switchBanner.className = 'wt-banner switch';
   b.appendChild(switchBanner);
@@ -805,7 +784,6 @@ function showSwitchBanner(hostName, videoId, platform, autoLeave = true) {
       clearInterval(switchTimerId); switchTimerId = null;
       switchBanner?.remove(); switchBanner = null;
       if (autoLeave) {
-        // 超时未选择 → 自动退出房间
         chrome.runtime.sendMessage({ type: 'leave_room' });
         isInRoom = false; isHost = false; currentMembers = [];
         updateBubble();
@@ -896,7 +874,6 @@ function showLostBanner(hostName) {
 function showNonActiveBanner(role) {
   const b = getBanners();
   if (!b) return;
-  // 避免重复
   if (shadowRoot.getElementById('wt-nonactive-banner')) return;
   const el = document.createElement('div');
   el.id = 'wt-nonactive-banner';
@@ -929,8 +906,6 @@ function showReconnectCatchUpPrompt() {
   setTimeout(dismiss, 10000);
 }
 
-// ── 从 background 同步状态 ────────────────────────
-// 注意：不覆盖 isActiveTab，由 room_joined / became_active_tab / lost_active_tab 消息管理
 function syncStateFromBackground(callback) {
   chrome.runtime.sendMessage({ type: 'get_status' }, res => {
     if (chrome.runtime.lastError || !res) { callback?.(); return; }
@@ -943,7 +918,6 @@ function syncStateFromBackground(callback) {
       currentToken = res.currentRoom.token || '';
       currentVideoId = res.currentRoom.videoId || '';
       currentPlatform = res.currentRoom.platform || '';
-      // isActiveTab 不在这里更新，避免覆盖 room_joined 等消息设置的正确值
     } else {
       isInRoom = false; isHost = false; isActiveTab = false;
       currentMembers = []; currentToken = '';
@@ -954,7 +928,6 @@ function syncStateFromBackground(callback) {
   });
 }
 
-// ── 适配器初始化 ──────────────────────────────────
 let positionTimer = null;
 
 function initAdapter() {
@@ -962,7 +935,6 @@ function initAdapter() {
   adapter.init();
 
   adapter.onPlay(() => {
-    // 不检查 isHost：房客控制开关开启时房客也需要发送，由 background.js 根据 guestControlAllowed 决定是否转发
     if (!isInRoom || !isActiveTab || suppressEvents) return;
     chrome.runtime.sendMessage({ type: 'sync_action', action: 'play', seekTime: adapter.getCurrentTime() });
   });
@@ -977,11 +949,9 @@ function initAdapter() {
   adapter.onVideoChange((videoId, isLive) => {
     if (!isInRoom || !isActiveTab) return;
     if (isHost) {
-      // 房主：广播视频切换
       chrome.runtime.sendMessage({ type: 'video_changed', videoId, platform: adapter.getPlatform(), isLive });
       if (videoId) { currentVideoId = videoId; currentPlatform = adapter.getPlatform(); }
     } else if (currentVideoId && (!videoId || videoId !== currentVideoId)) {
-      // 房客离开视频（到首页/其他页）或切换到不同视频：立即退房
       chrome.runtime.sendMessage({ type: 'leave_room' });
       isInRoom = false; isHost = false; currentMembers = [];
       updateBubble();
@@ -996,15 +966,12 @@ function initAdapter() {
   }, 3000);
 }
 
-// ── 页面初始化 ────────────────────────────────────
 async function onPageReady() {
-  // 先读语言设置，确保所有 UI 文字正确
   const lang = await new Promise(r => chrome.storage.local.get({ lang: 'en' }, s => r(s.lang || 'en')));
   setLang(lang);
 
   initOverlay();
 
-  // 检测 URL 中是否有邀请码
   const hashCode = getHashCode();
 
   chrome.runtime.sendMessage({ type: 'check_is_active_tab' }, res => {
@@ -1019,7 +986,6 @@ async function onPageReady() {
       syncStateFromBackground(() => {
         if (isActiveTab) {
           if (isHost) {
-            // 房主：检查当前视频是否和房间记录不一致（跨平台/整页刷新后需要广播）
             const pageVid = adapter?.getVideoId();
             const pagePlat = adapter?.getPlatform();
             if (pageVid && (pageVid !== currentVideoId || pagePlat !== currentPlatform)) {
@@ -1035,7 +1001,6 @@ async function onPageReady() {
               }, 800);
             }
           } else {
-            // 房客：自动追上房主
             setTimeout(() => chrome.runtime.sendMessage({ type: 'catch_up' }), 600);
           }
         } else {
@@ -1046,13 +1011,11 @@ async function onPageReady() {
       });
     } else {
       updateBubble();
-      // 不在房间时，2 秒后展示 join banner（如果没被 dismiss 过）
       if (!sessionStorage.getItem('wt-no-banner')) {
         setTimeout(() => {
           chrome.runtime.sendMessage({ type: 'get_status' }, s => {
             if (!s?.currentRoom && shadowRoot) {
               if (hashCode) {
-                // 有邀请码：打开面板让用户加入
                 panelVisible = true;
                 panel.style.display = '';
                 renderPanel();
@@ -1067,7 +1030,6 @@ async function onPageReady() {
   initAdapter();
 }
 
-// ── 消息监听 ───────────────────────────────────────
 chrome.runtime.onMessage.addListener((msg) => {
   switch (msg.type) {
 
@@ -1100,7 +1062,6 @@ chrome.runtime.onMessage.addListener((msg) => {
       break;
 
     case 'sync_apply':
-      // 房客控制开启时房主也要接受同步，去掉 isHost 限制
       if (!isInRoom || !isActiveTab) break;
       suppressEvents = true;
       if (msg.action === 'play') adapter?.play();
@@ -1116,7 +1077,6 @@ chrome.runtime.onMessage.addListener((msg) => {
       break;
 
     case 'sync_opportunity':
-      // 房客控制开启时房主也要看到否决弹窗，去掉 isHost 限制
       if (!isInRoom || !isActiveTab) break;
       showVetoBanner(msg.hostName, msg.action, msg.delaySeconds);
       break;
@@ -1130,7 +1090,6 @@ chrome.runtime.onMessage.addListener((msg) => {
       if (!adapter || !isActiveTab) break;
       suppressEvents = true;
       if (adapter.seekTo(msg.seekTime) === false) {
-        // 视频元素还没就绪，1.5s 后重新请求
         suppressEvents = false;
         setTimeout(() => chrome.runtime.sendMessage({ type: 'catch_up' }), 1500);
         break;
@@ -1147,7 +1106,6 @@ chrome.runtime.onMessage.addListener((msg) => {
 
     case 'host_transferred':
       if (!isInRoom || isHost) break;
-      // 清除旧房间状态，显示跟随横幅
       isInRoom = false; isHost = false; isActiveTab = false;
       hostSearching = false; currentMembers = []; currentToken = '';
       clearInterval(positionTimer); positionTimer = null;
@@ -1191,7 +1149,6 @@ chrome.runtime.onMessage.addListener((msg) => {
       break;
 
     case 'room_dissolved':
-      // 房间被房主断线后解散
       if (isInRoom) {
         isInRoom = false; isHost = false; isActiveTab = false;
         hostSearching = false; currentMembers = []; currentToken = '';
@@ -1205,7 +1162,6 @@ chrome.runtime.onMessage.addListener((msg) => {
       break;
 
     case 'self_left_room':
-      // 用户自己在某个页面主动退出，通知其他 tab 清除状态
       if (isInRoom) {
         isInRoom = false; isHost = false; isActiveTab = false;
         hostSearching = false; currentMembers = []; currentToken = '';
@@ -1227,12 +1183,10 @@ chrome.runtime.onMessage.addListener((msg) => {
       break;
 
     case 'get_player_state':
-      // 由 popup 调用
-      return; // 不处理，下面有 addListener 的 return true
+      return;
   }
 });
 
-// 单独处理需要 sendResponse 的消息
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (msg.type === 'get_player_state') {
     sendResponse({
@@ -1244,7 +1198,6 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   }
 });
 
-// ── 启动 ──────────────────────────────────────────
 if (adapter) {
   if (document.readyState === 'loading') {
     document.addEventListener('DOMContentLoaded', onPageReady);

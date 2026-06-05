@@ -14,6 +14,10 @@ import (
 
 const tokenChars = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
 
+func isSupportedPlatform(platform string) bool {
+	return platform == "youtube" || platform == "bilibili"
+}
+
 func generateID(length int) string {
 	b := make([]byte, length)
 	for i := range b {
@@ -47,6 +51,10 @@ func handleCreateRoom(cfg Config) http.HandlerFunc {
 		}
 		if req.HostName == "" || req.Platform == "" {
 			http.Error(w, `{"error":"missing fields"}`, http.StatusBadRequest)
+			return
+		}
+		if !isSupportedPlatform(req.Platform) {
+			http.Error(w, `{"error":"unsupported platform"}`, http.StatusBadRequest)
 			return
 		}
 		if err := validateName(req.HostName); err != nil {
@@ -137,7 +145,6 @@ func handleJoinRoom(cfg Config) http.HandlerFunc {
 		}
 
 		room.RLock()
-		// token 过期检查
 		if time.Now().After(room.TokenExpires) {
 			room.RUnlock()
 			globalState.RecordTokenFail(ip, cfg.TokenFailMax, cfg.TokenBanMinutes)
@@ -145,7 +152,6 @@ func handleJoinRoom(cfg Config) http.HandlerFunc {
 			return
 		}
 
-		// 防止同浏览器同时是房主和房客
 		if req.ClientID != "" && room.HostClientID == req.ClientID {
 			room.RUnlock()
 			http.Error(w, `{"error":"cannot join your own room"}`, http.StatusForbidden)
@@ -204,7 +210,6 @@ func handleStatus() http.HandlerFunc {
 	}
 }
 
-// GET /room/check?token=XXX  轻量检查房间是否在线（不计入失败次数）
 func handleCheckRoom() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -238,7 +243,6 @@ func handleCheckRoom() http.HandlerFunc {
 	}
 }
 
-// GET /room/token/refresh  房主主动刷新 token
 func handleRefreshToken(cfg Config) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		roomID := r.URL.Query().Get("room_id")

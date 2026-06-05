@@ -57,7 +57,6 @@ var (
 	})
 )
 
-// UpdateGauges 定期调用，更新实时指标
 func UpdateGauges() {
 	metricActiveRooms.Set(float64(globalState.RoomCount()))
 	metricActiveConnections.Set(float64(globalState.ConnectionCount()))
@@ -67,12 +66,12 @@ func UpdateGauges() {
 	metricMemoryMB.Set(float64(mem.Alloc) / 1024 / 1024)
 }
 
-// StartMetricsServer 启动 Prometheus metrics 端点
-func StartMetricsServer(port string) {
+func StartMetricsServer(bindHost, port string) {
 	mux := http.NewServeMux()
 	mux.Handle("/metrics", promhttp.Handler())
-	log.Info().Str("port", port).Msg("metrics server starting")
-	if err := http.ListenAndServe(":"+port, mux); err != nil {
+	addr := bindHost + ":" + port
+	log.Info().Str("addr", addr).Msg("metrics server starting")
+	if err := http.ListenAndServe(addr, mux); err != nil {
 		log.Error().Err(err).Msg("metrics server failed")
 	}
 }

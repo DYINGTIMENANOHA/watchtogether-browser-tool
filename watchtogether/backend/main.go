@@ -13,16 +13,16 @@ func main() {
 
 	log.Info().Str("port", cfg.Port).Str("prom_port", cfg.PromPort).Msg("WatchTogether starting")
 
-	go StartMetricsServer(cfg.PromPort)
+	go StartMetricsServer(cfg.BindHost, cfg.PromPort)
 	StartCleanup(cfg)
 
 	mux := http.NewServeMux()
 
-	mux.HandleFunc("/room/create",        CORSMiddleware(handleCreateRoom(cfg)))
-	mux.HandleFunc("/room/join",          CORSMiddleware(handleJoinRoom(cfg)))
-	mux.HandleFunc("/room/status",        CORSMiddleware(handleStatus()))
-	mux.HandleFunc("/room/check",         CORSMiddleware(handleCheckRoom()))
-	mux.HandleFunc("/room/token/refresh", CORSMiddleware(handleRefreshToken(cfg)))
+	mux.HandleFunc("/room/create", CORSMiddlewareWithConfig(cfg, handleCreateRoom(cfg)))
+	mux.HandleFunc("/room/join", CORSMiddlewareWithConfig(cfg, handleJoinRoom(cfg)))
+	mux.HandleFunc("/room/status", CORSMiddlewareWithConfig(cfg, handleStatus()))
+	mux.HandleFunc("/room/check", CORSMiddlewareWithConfig(cfg, handleCheckRoom()))
+	mux.HandleFunc("/room/token/refresh", CORSMiddlewareWithConfig(cfg, handleRefreshToken(cfg)))
 	mux.HandleFunc("/ws", handleWS(cfg))
 	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -30,12 +30,12 @@ func main() {
 	})
 
 	srv := &http.Server{
-		Addr:         ":" + cfg.Port,
-		Handler:      mux,
+		Addr:              cfg.BindHost + ":" + cfg.Port,
+		Handler:           mux,
 		ReadHeaderTimeout: 5 * time.Second,
-		ReadTimeout:  15 * time.Second,
-		WriteTimeout: 15 * time.Second,
-		IdleTimeout:  120 * time.Second,
+		ReadTimeout:       15 * time.Second,
+		WriteTimeout:      15 * time.Second,
+		IdleTimeout:       120 * time.Second,
 	}
 
 	log.Info().Str("addr", srv.Addr).Msg("server listening")

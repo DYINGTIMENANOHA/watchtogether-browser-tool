@@ -25,11 +25,11 @@ type Room struct {
 	RoomID              string
 	Token               string
 	HostSID             string
-	HostClientID        string            // 房主 clientId，防止同浏览器同时为房主和房客
+	HostClientID        string
 	HostName            string
-	HostSearching       bool              // 房主正在找视频（未在任何视频页面）
-	HostReconnecting    bool              // 房主已断线，等待重连
-	HostReconnectTimer  *time.Timer       // 重连超时计时器（超时后解散房间）
+	HostSearching       bool
+	HostReconnecting    bool
+	HostReconnectTimer  *time.Timer
 	VideoID             string
 	Platform            string
 	Title               string
@@ -40,7 +40,7 @@ type Room struct {
 	VetoSeconds         int
 	GuestControlAllowed bool
 	Members             map[string]*Member
-	ClientIDs           map[string]string // clientId → sid，用于踢旧连接/重连识别
+	ClientIDs           map[string]string
 	CreatedAt           time.Time
 	TokenExpires        time.Time
 	LastActivity        time.Time
@@ -65,7 +65,7 @@ func (r *Room) Broadcast(msg map[string]any, excludeSID string) {
 type PendingAction struct {
 	Action    string
 	SeekTime  float64
-	SenderSID string // 触发此操作的成员 SID，同步时排除该成员（避免回声）
+	SenderSID string
 	Timer     *time.Timer
 }
 

@@ -6,12 +6,13 @@ services:
     container_name: watchtogether
     restart: unless-stopped
     ports:
-      - "8892:8892"
-      - "9091:9091"
+      - "127.0.0.1:8892:8892"
+      - "127.0.0.1:9091:9091"
     environment:
       - PORT=8892
       - PROM_PORT=9091
-      - CLIENT_TOKEN=${CLIENT_TOKEN:-change-this-token}
+      - CLIENT_TOKEN=${CLIENT_TOKEN:-}
+      - ALLOWED_ORIGINS=${ALLOWED_ORIGINS:-}
       - MAX_ROOMS=10000
       - ROOM_TTL_MINUTES=30
       - MEMBER_TTL_MINUTES=10
@@ -35,7 +36,7 @@ services:
     container_name: wt_prometheus
     restart: unless-stopped
     ports:
-      - "9090:9090"
+      - "127.0.0.1:9090:9090"
     volumes:
       - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml
       - prometheus_data:/prometheus
@@ -51,7 +52,7 @@ services:
     container_name: wt_loki
     restart: unless-stopped
     ports:
-      - "3100:3100"
+      - "127.0.0.1:3100:3100"
     volumes:
       - ./monitoring/loki.yml:/etc/loki/loki.yml
       - loki_data:/loki
@@ -77,9 +78,9 @@ services:
     container_name: wt_grafana
     restart: unless-stopped
     ports:
-      - "3000:3000"
+      - "127.0.0.1:3000:3000"
     environment:
-      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_PASSWORD:-admin}
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_PASSWORD:-change-me-before-public-use}
       - GF_USERS_ALLOW_SIGN_UP=false
       - GF_SERVER_ROOT_URL=%(protocol)s://%(domain)s/grafana/
     volumes:

@@ -1,8 +1,6 @@
 #!/bin/bash
-# WatchTogether 服务端一键安装脚本
-# 支持 Ubuntu 20.04+ / Debian 11+ / CentOS 8+
-# 用法：curl -fsSL <你的脚本地址> | bash
-#   或：bash install.sh [--port 8892] [--domain your.domain.com]
+# One-command installer for the WatchTogether server.
+# Usage: bash install.sh [--port 8892] [--domain your.domain.com] [--dir /opt/watchtogether]
 
 set -e
 
@@ -12,7 +10,6 @@ ok()    { echo -e "${GREEN}[OK]${NC}  $1"; }
 warn()  { echo -e "${YELLOW}[WARN]${NC} $1"; }
 die()   { echo -e "${RED}[ERR]${NC}  $1"; exit 1; }
 
-# ── 参数 ──────────────────────────────────────────
 PORT=8892
 DOMAIN=""
 INSTALL_DIR="/opt/watchtogether"
@@ -24,34 +21,30 @@ while [[ "$#" -gt 0 ]]; do
     --port)   PORT="$2"; shift ;;
     --domain) DOMAIN="$2"; shift ;;
     --dir)    INSTALL_DIR="$2"; shift ;;
-    *) warn "未知参数 $1，忽略" ;;
+    *) warn "Unknown argument $1, ignoring" ;;
   esac
   shift
 done
 
-# ── 检查 root ──────────────────────────────────────
-[[ $EUID -ne 0 ]] && die "请用 root 或 sudo 运行此脚本"
+[[ $EUID -ne 0 ]] && die "Please run this script as root or with sudo"
 
-# ── 检测 OS ───────────────────────────────────────
 if   [[ -f /etc/debian_version ]]; then PKG="apt-get"
 elif [[ -f /etc/redhat-release ]]; then PKG="yum"
-else die "暂不支持的操作系统，请手动安装"; fi
+else die "Unsupported OS. Please install manually."; fi
 
-# ── 安装基础依赖 ──────────────────────────────────
-info "安装基础依赖..."
+info "Installing base dependencies..."
 if [[ "$PKG" == "apt-get" ]]; then
   apt-get update -qq
   apt-get install -y -qq curl wget git build-essential
 else
   yum install -y -q curl wget git gcc
 fi
-ok "依赖安装完成"
+ok "Dependencies installed"
 
-# ── 安装 Go ───────────────────────────────────────
 if command -v go &>/dev/null && [[ "$(go version | awk '{print $3}')" == "go${GO_VERSION}" ]]; then
-  ok "Go ${GO_VERSION} 已安装"
+  ok "Go ${GO_VERSION} already installed"
 else
-  info "安装 Go ${GO_VERSION}..."
+  info "Installing Go ${GO_VERSION}..."
   ARCH=$(uname -m)
   [[ "$ARCH" == "x86_64" ]] && GOARCH="amd64" || GOARCH="arm64"
   GO_TAR="go${GO_VERSION}.linux-${GOARCH}.tar.gz"
@@ -61,41 +54,36 @@ else
   rm /tmp/${GO_TAR}
   export PATH=$PATH:/usr/local/go/bin
   echo 'export PATH=$PATH:/usr/local/go/bin' >> /etc/profile
-  ok "Go ${GO_VERSION} 安装完成"
+  ok "Go ${GO_VERSION} installed"
 fi
 
 export PATH=$PATH:/usr/local/go/bin
 
-# ── 拉取/更新代码 ─────────────────────────────────
 REPO_DIR="$INSTALL_DIR"
 if [[ -d "$REPO_DIR/.git" ]]; then
-  info "更新代码..."
+  info "Updating repository..."
   git -C "$REPO_DIR" pull --quiet
 else
-  info "克隆代码到 $REPO_DIR..."
+  info "Cloning repository to $REPO_DIR..."
   mkdir -p "$(dirname "$REPO_DIR")"
   git clone --quiet https://github.com/YOUR_USERNAME/watchtogether "$REPO_DIR" 2>/dev/null || {
-    # 如果没有 git 仓库，假设已在当前目录
-    warn "无法克隆仓库，使用当前目录"
+    warn "Could not clone repository, using current directory"
     REPO_DIR="$(pwd)"
   }
 fi
 
 BACKEND_DIR="$REPO_DIR/backend"
-[[ -d "$BACKEND_DIR" ]] || die "找不到 backend 目录：$BACKEND_DIR"
+[[ -d "$BACKEND_DIR" ]] || die "Backend directory not found: $BACKEND_DIR"
 
-# ── 编译 ──────────────────────────────────────────
-info "编译后端..."
+info "Building backend..."
 cd "$BACKEND_DIR"
-go build -o watchtogether . || die "编译失败，请检查 Go 环境"
+go build -o watchtogether . || die "Build failed; check your Go environment"
 chmod +x watchtogether
-ok "编译完成"
+ok "Build complete"
 
-# ── 创建日志目录 ──────────────────────────────────
 mkdir -p "$BACKEND_DIR/logs"
 
-# ── 写 systemd service ────────────────────────────
-info "配置 systemd 服务..."
+info "Writing systemd service..."
 cat > /etc/systemd/system/${SERVICE_NAME}.service << EOF
 [Unit]
 Description=WatchTogether Server
@@ -109,6 +97,7 @@ ExecStart=${BACKEND_DIR}/watchtogether
 Restart=always
 RestartSec=5
 Environment=PORT=${PORT}
+Environment=BIND_HOST=127.0.0.1
 Environment=LOG_PRETTY=0
 
 [Install]
@@ -121,43 +110,29 @@ systemctl restart ${SERVICE_NAME}
 sleep 2
 
 if systemctl is-active --quiet ${SERVICE_NAME}; then
-  ok "服务已启动 (端口 ${PORT})"
+  ok "Service started on port ${PORT}"
 else
-  die "服务启动失败，运行 journalctl -u ${SERVICE_NAME} -n 30 查看日志"
+  die "Service failed to start. Run: journalctl -u ${SERVICE_NAME} -n 30"
 fi
 
-# ── 防火墙放行 ────────────────────────────────────
-if command -v ufw &>/dev/null && ufw status | grep -q "active"; then
-  ufw allow ${PORT}/tcp --quiet && ok "UFW 已放行端口 ${PORT}"
-elif command -v firewall-cmd &>/dev/null; then
-  firewall-cmd --permanent --add-port=${PORT}/tcp --quiet && firewall-cmd --reload --quiet && ok "firewalld 已放行端口 ${PORT}"
-fi
+info "Backend is bound to 127.0.0.1:${PORT}; expose it through Nginx instead of opening this port."
 
-# ── Nginx 提示 ────────────────────────────────────
 echo ""
-echo -e "${CYAN}══════════════════════════════════════════${NC}"
-echo -e "${GREEN} WatchTogether 安装完成！${NC}"
-echo -e "${CYAN}══════════════════════════════════════════${NC}"
-echo ""
-echo " 服务状态：systemctl status ${SERVICE_NAME}"
-echo " 实时日志：journalctl -u ${SERVICE_NAME} -f"
-echo " 后端端口：${PORT}"
+echo -e "${GREEN}WatchTogether install complete.${NC}"
+echo "Service status: systemctl status ${SERVICE_NAME}"
+echo "Live logs:      journalctl -u ${SERVICE_NAME} -f"
+echo "Backend URL:    http://127.0.0.1:${PORT}"
 echo ""
 
 if [[ -n "$DOMAIN" ]]; then
-  echo -e "${YELLOW}接下来需要配置 Nginx + HTTPS（Chrome 插件必须用 wss://）：${NC}"
-  echo ""
-  echo " 1. 安装 Nginx 和 Certbot："
-  echo "    apt-get install -y nginx certbot python3-certbot-nginx"
-  echo ""
-  echo " 2. 申请 SSL 证书："
-  echo "    certbot --nginx -d ${DOMAIN}"
-  echo ""
-  echo " 3. 在 Nginx 配置里加入反代（参考 repo 里的 nginx_snippet.conf）"
-  echo ""
-  echo " 4. 插件设置页填入：https://${DOMAIN}"
+  echo -e "${YELLOW}Next: configure Nginx + HTTPS. Chrome extensions require wss://.${NC}"
+  echo "1. Install Nginx and Certbot:"
+  echo "   apt-get install -y nginx certbot python3-certbot-nginx"
+  echo "2. Request an SSL certificate:"
+  echo "   certbot --nginx -d ${DOMAIN}"
+  echo "3. Add the reverse proxy rules from nginx_snippet.conf."
+  echo "4. Set the extension server URL to: https://${DOMAIN}"
 else
-  echo -e "${YELLOW}注意：Chrome 插件需要 HTTPS (wss://)，请配置域名和 SSL 证书。${NC}"
-  echo " 参考 repo 里的 nginx_snippet.conf 和 README.md"
+  echo -e "${YELLOW}Chrome extensions require HTTPS/wss://. Configure a domain and SSL certificate.${NC}"
 fi
 echo ""

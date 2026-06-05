@@ -8,7 +8,6 @@ class BilibiliAdapter {
   getVideoId() {
     const m = location.pathname.match(/\/video\/((?:BV|AV|av|bv)\w+)/i);
     if (!m) return '';
-    // BV ID 大小写敏感（Base58），只规范化前两个字母前缀，其余保持原样
     return m[1].slice(0, 2).toUpperCase() + m[1].slice(2);
   }
   getPlatform() { return 'bilibili'; }

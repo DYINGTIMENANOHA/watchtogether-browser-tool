@@ -1,96 +1,133 @@
-# WatchTogether
+# WatchTogether Server
 
-同步观看浏览器插件，支持 YouTube 和 Bilibili。
+Self-hostable relay server for the WatchTogether browser extension.
 
-## 部署到服务器
+## Deploy
 
-### 1. 上传代码
+The default deployment is public: anyone using the extension can connect through your HTTPS domain. Private access controls are optional and intended for personal or closed-group servers.
 
-```bash
-scp -r watchtogether/ root@your-server:/opt/watchtogether
-ssh root@your-server
-cd /opt/watchtogether
-```
-
-### 2. 配置环境变量
+### 1. Upload or clone the repository
 
 ```bash
-cp .env.example .env
-nano .env   # 修改 CLIENT_TOKEN 和 GRAFANA_PASSWORD
+cd /opt
+git clone <your-repo-url> watchtogether
+cd watchtogether
 ```
 
-### 3. 启动服务
+### 2. Configure environment variables
+
+Create a `.env` file when using Docker Compose:
 
 ```bash
-docker-compose up -d
+CLIENT_TOKEN=
+ALLOWED_ORIGINS=
+GRAFANA_PASSWORD=change-me
 ```
 
-验证是否正常：
-```bash
-curl http://localhost:8892/health
-# 返回 {"status":"ok"} 即成功
-```
+Leave `CLIENT_TOKEN` and `ALLOWED_ORIGINS` empty for the normal public server mode. This keeps the server usable exactly like the packaged public relay: users only need the server URL.
 
-### 4. 配置 Nginx
+`CLIENT_TOKEN` is optional private-server protection. When set, every extension user must enter the same token in Settings. Do not embed this token in a public extension package.
 
-把 `nginx_snippet.conf` 里的内容复制到现有 Nginx server 块里：
+`ALLOWED_ORIGINS` is optional browser-origin filtering. It is useful as an extra private-server restriction, but it is easy to misconfigure and is not a replacement for real authentication. When set, only matching browser extension origins can call the API or WebSocket endpoint, for example:
 
 ```bash
-# 编辑现有 Nginx 配置
-nano /etc/nginx/sites-available/streamforsoul.conf
-
-# 把 nginx_snippet.conf 的内容粘贴进去（在现有 location 块同级）
-
-# 测试并重载
-nginx -t && nginx -s reload
+ALLOWED_ORIGINS=chrome-extension://your-extension-id
 ```
 
-### 5. 换域名时只需做一件事
+Leave both empty unless you intentionally want a private deployment.
+
+### 3. Start services
+
+Docker Compose deployment:
 
 ```bash
-# nginx_snippet.conf 里的路径是 /wt/...，域名无关
-# 只需把新域名的 DNS 指向服务器，Nginx 配置 server_name 改一下即可
-# Go 服务和插件的服务器地址配置只改 .env 里的 DOMAIN
-nginx -s reload
+docker compose up -d --build
 ```
 
----
+Local health check:
 
-## 端口说明
-
-| 端口 | 用途 |
-|------|------|
-| 8892 | Go 服务（内部，不对外暴露）|
-| 9091 | Prometheus metrics（内部）|
-| 9090 | Prometheus（内部）|
-| 3100 | Loki（内部）|
-| 3000 | Grafana（通过 /wt/grafana/ 访问）|
-
-所有端口均不对外直接暴露，通过现有 Nginx 8443 转发。
-
----
-
-## 目录结构
-
-```
-/opt/watchtogether/
-├── backend/          Go 源码
-├── monitoring/       Prometheus + Loki + Grafana 配置
-├── logs/             运行日志（自动创建）
-├── docker-compose.yml
-├── nginx_snippet.conf   粘贴到现有 Nginx 配置的片段
-├── .env              环境变量（从 .env.example 复制）
-└── README.md
+```bash
+curl http://127.0.0.1:8892/health
 ```
 
----
+Existing systemd deployment:
 
-## 插件使用自建服务器
-
-安装插件后进入设置页，将服务器地址改为：
-
-```
-https://your-domain.com:8443
+```bash
+sudo ./manage.sh deploy
+sudo ./manage.sh status
 ```
 
-默认指向官方服务器，普通用户无需修改。
+`deploy` builds the backend, reloads systemd, restarts the service, checks local health, checks whether backend/monitoring ports are exposed publicly, and tests the Nginx config. In an interactive shell it will ask whether to reload Nginx.
+
+To reload Nginx without a prompt:
+
+```bash
+sudo ./manage.sh deploy --reload-nginx
+```
+
+To reload Nginx separately:
+
+```bash
+sudo ./manage.sh nginx-reload
+```
+
+For first-time setup or old servers, confirm the backend is local-only:
+
+```bash
+sudo systemctl cat watchtogether
+```
+
+The service should include:
+
+```text
+Environment=BIND_HOST=127.0.0.1
+```
+
+If it does not, update the service file or rerun `install.sh`, then run:
+
+```bash
+sudo systemctl daemon-reload
+sudo ./manage.sh restart
+```
+
+### 4. Configure Nginx
+
+Copy `nginx_snippet.conf` into your existing HTTPS server block. The extension expects the `/wt/...` prefix when using the packaged defaults.
+
+```bash
+nginx -t
+systemctl reload nginx
+```
+
+### 5. Extension settings
+
+Open the extension settings page and set:
+
+```text
+Server URL: https://your-domain.com
+Server Access Token: <CLIENT_TOKEN, only for private servers>
+```
+
+## Ports
+
+| Port | Purpose |
+| ---- | ------- |
+| 8892 | Go API and WebSocket server |
+| 9091 | Prometheus metrics endpoint |
+| 9090 | Prometheus |
+| 3100 | Loki |
+| 3000 | Grafana |
+
+The Docker Compose file binds these ports to `127.0.0.1` by default. Public traffic should go through Nginx at `/wt/room/`, `/wt/ws`, and `/wt/health`. Do not expose the backend or monitoring ports directly unless you intentionally need local administration access through another secured channel.
+
+## Directory Layout
+
+```text
+watchtogether/
+  backend/              Go server source
+  monitoring/           Prometheus, Loki, and Grafana config
+  logs/                 Runtime logs
+  docker-compose.yml
+  nginx_snippet.conf    Reverse proxy snippet for an existing Nginx site
+  README.md
+```

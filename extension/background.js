@@ -10,9 +10,8 @@ let currentRoom = null;
 let mySid = null;
 let activeTabId = null;
 let _cachedClientId = null;
-let _isTransferring = false; // 房主转移房间时，抑制 room_lost 给房客的广播
+let _isTransferring = false; // Suppress room_lost while the host is transferring rooms.
 
-// ── 首次安装初始化 ─────────────────────────────────
 chrome.runtime.onInstalled.addListener(async (details) => {
   if (details.reason === 'install') {
     const clientId = _generateUUID();
@@ -29,16 +28,6 @@ function _generateUUID() {
 }
 
 function _generateNickname(lang) {
-  if (lang === 'zh') {
-    const adj = ['快乐', '可爱', '酷炫', '神秘', '友善', '慵懒', '热情', '机智'];
-    const noun = ['小猫', '大象', '企鹅', '熊猫', '狐狸', '兔子', '松鼠', '海豚'];
-    return adj[Math.floor(Math.random() * adj.length)] + noun[Math.floor(Math.random() * noun.length)];
-  }
-  if (lang === 'ja') {
-    const adj = ['元気な', 'かわいい', 'おしゃれな', 'ふしぎな', 'のんびり', 'かしこい', 'たのしい', 'やさしい'];
-    const noun = ['ネコ', 'パンダ', 'キツネ', 'ウサギ', 'クマ', 'タヌキ', 'リス', 'ペンギン'];
-    return adj[Math.floor(Math.random() * adj.length)] + noun[Math.floor(Math.random() * noun.length)];
-  }
   const adj = ['Happy', 'Cool', 'Curious', 'Friendly', 'Lazy', 'Clever', 'Brave', 'Silly'];
   const noun = ['Cat', 'Panda', 'Fox', 'Bunny', 'Bear', 'Wolf', 'Tiger', 'Penguin'];
   return adj[Math.floor(Math.random() * adj.length)] + noun[Math.floor(Math.random() * noun.length)];
@@ -62,8 +51,8 @@ async function getClientId() {
 
 async function getSettings() {
   return new Promise(resolve => {
-    chrome.storage.local.get({ serverUrl: '', nickname: '' }, s => {
-      // 空字符串 = 用户未填，回退到代码里写死的默认服务器
+    chrome.storage.local.get({ serverUrl: '', nickname: '', serverToken: '' }, s => {
+      // Empty serverUrl means "use the built-in default server".
       if (!s.serverUrl) s.serverUrl = DEFAULT_SERVER;
       resolve(s);
     });
@@ -81,6 +70,13 @@ async function getNickname() {
   });
 }
 
+function authHeaders(settings, json = false) {
+  const headers = {};
+  if (json) headers['Content-Type'] = 'application/json';
+  if (settings?.serverToken) headers['X-WT-Client-Token'] = settings.serverToken;
+  return headers;
+}
+
 function addToJoinHistory(entry) {
   chrome.storage.local.get({ joinHistory: [] }, ({ joinHistory }) => {
     const filtered = joinHistory.filter(r => r.token !== entry.token);
@@ -89,7 +85,6 @@ function addToJoinHistory(entry) {
   });
 }
 
-// ── WebSocket ─────────────────────────────────────
 async function connectWS(roomId, name) {
   if (ws) { ws.onclose = null; ws.close(); ws = null; }
   wsState = 'connecting';
@@ -97,10 +92,12 @@ async function connectWS(roomId, name) {
 
   const [s, clientId] = await Promise.all([getSettings(), getClientId()]);
   const wsUrl = s.serverUrl.replace('https://', 'wss://').replace('http://', 'ws://');
+  const wsParams = new URLSearchParams({ room_id: roomId });
+  if (s.serverToken) wsParams.set('client_token', s.serverToken);
 
   console.log('[WT] Connecting to WS:', wsUrl, 'room:', roomId, 'name:', name);
 
-  ws = new WebSocket(`${wsUrl}/wt/ws?room_id=${roomId}`);
+  ws = new WebSocket(`${wsUrl}/wt/ws?${wsParams.toString()}`);
 
   ws.onopen = () => {
     wsState = 'connected';
@@ -109,7 +106,6 @@ async function connectWS(roomId, name) {
     ws.send(JSON.stringify(helloMsg));
     console.log('[WT] WS connected, sent hello');
 
-    // 重连后重新发送配置
     if (currentRoom?.isHost) {
       if (currentRoom.vetoEnabled !== undefined) {
         ws.send(JSON.stringify({ type: 'veto_config', action: currentRoom.vetoEnabled ? 'true' : 'false', seek_time: currentRoom.vetoSeconds || 5 }));
@@ -132,12 +128,10 @@ async function connectWS(roomId, name) {
     _broadcastStatus('disconnected');
 
     if (e.code === 4000) {
-      // 主动退出，不重连
       return;
     }
     if (!currentRoom) return;
     if (_isTransferring) {
-      // 房间转移完成，静默退出旧房间
       _isTransferring = false;
       currentRoom = null; mySid = null; activeTabId = null;
       return;
@@ -152,9 +146,8 @@ async function connectWS(roomId, name) {
       if (currentRoom) currentRoom._wasReconnecting = true;
       reconnectTimer = setTimeout(() => connectWS(roomId, name), delay);
     } else {
-      // 重连耗尽，退出房间
       console.log('[WT] Reconnect exhausted, leaving room');
-      _broadcastToAllVideoTabs({ type: 'room_lost', hostName: '（连接超时）', autoLeave: true });
+      _broadcastToAllVideoTabs({ type: 'room_lost', hostName: '(connection timeout)', autoLeave: true });
       currentRoom = null; mySid = null; activeTabId = null;
     }
   };
@@ -164,7 +157,7 @@ async function connectWS(roomId, name) {
 
 function disconnectWS() {
   if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null; }
-  reconnectAttempts = MAX_RECONNECT; // 阻止自动重连
+  reconnectAttempts = MAX_RECONNECT;
   if (ws) {
     ws.onclose = null;
     try { ws.send(JSON.stringify({ type: 'leave' })); } catch (_) {}
@@ -206,7 +199,6 @@ function _broadcastToAllVideoTabs(msg) {
   });
 }
 
-// ── 服务器消息处理 ─────────────────────────────────
 function handleServerMessage(msg) {
 
   switch (msg.type) {
@@ -214,8 +206,6 @@ function handleServerMessage(msg) {
       mySid = msg.sid;
       if (currentRoom) currentRoom.isHost = msg.is_host;
       sendToActiveTab({ type: 'room_joined', isHost: msg.is_host, sid: msg.sid });
-      // 如果是重连后的 welcome（reconnectAttempts > 0 时），提示追上
-        // 重连成功后提示追上（非房主）
       if (!msg.is_host && currentRoom?._wasReconnecting) {
         sendToActiveTab({ type: 'reconnect_catch_up_prompt' });
       }
@@ -227,7 +217,6 @@ function handleServerMessage(msg) {
       break;
 
     case 'kicked':
-      // 该连接被新连接踢掉（不应该发生在正常流程中，但作为防护）
       console.log('[WT] Connection kicked:', msg.reason);
       wsState = 'disconnected';
       currentRoom = null; mySid = null; activeTabId = null;
@@ -275,7 +264,6 @@ function handleServerMessage(msg) {
       break;
 
     case 'host_transferred':
-      // 房主转移：抑制后续 room_lost，预存历史，通知 content.js 显示跟随横幅
       _isTransferring = true;
       if (msg.new_token) {
         addToJoinHistory({
@@ -307,7 +295,6 @@ function handleServerMessage(msg) {
 
     case 'member_joined':
       if (currentRoom?.members) {
-        // 避免重复
         if (!currentRoom.members.find(m => m.sid === msg.sid)) {
           currentRoom.members.push({ sid: msg.sid, name: msg.name, is_host: false });
         }
@@ -325,13 +312,11 @@ function handleServerMessage(msg) {
     case 'member_list':
       if (currentRoom) currentRoom.members = msg.members;
       sendToActiveTab({ type: 'member_list', members: msg.members, count: msg.count });
-      // 非主页面也要收到，用于更新悬浮面板
       _broadcastToAllVideoTabs({ type: 'member_list', members: msg.members, count: msg.count });
       break;
   }
 }
 
-// ── 消息监听 ───────────────────────────────────────
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   switch (msg.type) {
 
@@ -367,7 +352,6 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
 
     case 'leave_room':
       disconnectWS();
-      // 通知所有视频 tab 清除状态，解决多 tab 状态不一致问题
       _broadcastToAllVideoTabs({ type: 'self_left_room' });
       sendResponse({ ok: true });
       break;
@@ -386,8 +370,6 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       break;
 
     case 'sync_action':
-      // 不在客户端校验 isHost/guestControlAllowed，直接转发给服务器
-      // 服务器端已有完整鉴权：sid == HostSID || room.GuestControlAllowed
       if (currentRoom) {
         const seekTime = msg.seekTime || 0;
         if (isFinite(seekTime) && seekTime >= 0) {
@@ -418,7 +400,6 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           currentRoom.platform = msg.platform;
           wsSend({ type: 'video_changed', video_id: msg.videoId, platform: msg.platform, is_live: msg.isLive || false });
         } else {
-          // 房主在找视频
           currentRoom.hostSearching = true;
           wsSend({ type: 'host_searching' });
         }
@@ -435,14 +416,13 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       if (currentRoom) currentRoom.guestControlAllowed = msg.allowed;
       break;
 
-    // content.js 请求创建房间
     case 'api_create_room':
       (async () => {
         try {
           const [s, clientId] = await Promise.all([getSettings(), getClientId()]);
           const res = await fetch(`${s.serverUrl}/wt/room/create`, {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+            headers: authHeaders(s, true),
             body: JSON.stringify({
               host_name: msg.nickname,
               client_id: clientId,
@@ -456,36 +436,35 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           });
           if (!res.ok) {
             const e = await res.json().catch(() => ({}));
-            sendResponse({ ok: false, error: e.error || '创建失败' });
+            sendResponse({ ok: false, error: e.error || 'Create failed' });
             return;
           }
           const data = await res.json();
           sendResponse({ ok: true, data });
         } catch (e) {
-          sendResponse({ ok: false, error: e.message || '网络错误' });
+          sendResponse({ ok: false, error: e.message || 'Network error' });
         }
       })();
       return true;
 
-    // content.js 请求执行 API 调用（避免跨域问题）
     case 'api_join_room':
       (async () => {
         try {
           const s = await getSettings();
           const res = await fetch(`${s.serverUrl}/wt/room/join`, {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+            headers: authHeaders(s, true),
             body: JSON.stringify({ token: msg.token, guest_name: msg.nickname, client_id: await getClientId() }),
           });
           if (!res.ok) {
             const e = await res.json().catch(() => ({}));
-            sendResponse({ ok: false, error: e.error || `请求失败(${res.status})` });
+            sendResponse({ ok: false, error: e.error || `Request failed (${res.status})` });
             return;
           }
           const data = await res.json();
           sendResponse({ ok: true, data });
         } catch (e) {
-          sendResponse({ ok: false, error: e.message || '网络错误' });
+          sendResponse({ ok: false, error: e.message || 'Network error' });
         }
       })();
       return true; // async
@@ -495,10 +474,9 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         try {
           const [s, clientId] = await Promise.all([getSettings(), getClientId()]);
 
-          // 1. 创建新房间
           const res = await fetch(`${s.serverUrl}/wt/room/create`, {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+            headers: authHeaders(s, true),
             body: JSON.stringify({
               host_name:    msg.nickname,
               client_id:    clientId,
@@ -512,19 +490,17 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           });
           if (!res.ok) {
             const e = await res.json().catch(() => ({}));
-            sendResponse({ ok: false, error: e.error || '创建失败' });
+            sendResponse({ ok: false, error: e.error || 'Create failed' });
             return;
           }
           const data = await res.json();
 
-          // 2. 通知旧 active tab 清除状态
           const oldTabId = activeTabId;
           const newTabId = sender.tab?.id || null;
           if (oldTabId && oldTabId !== newTabId) {
             chrome.tabs.sendMessage(oldTabId, { type: 'self_left_room' }).catch(() => {});
           }
 
-          // 3. 在旧 WS 上广播转移消息
           if (ws && ws.readyState === WebSocket.OPEN) {
             ws.send(JSON.stringify({
               type:      'host_transferred',
@@ -535,7 +511,6 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
             }));
           }
 
-          // 4. 等待消息发出后断开旧连接
           await new Promise(r => setTimeout(r, 200));
           if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null; }
           reconnectAttempts = MAX_RECONNECT;
@@ -547,7 +522,6 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           }
           mySid = null;
 
-          // 5. 建立新房间
           activeTabId = newTabId;
           currentRoom = {
             roomId:             data.room_id,
@@ -568,7 +542,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
 
           sendResponse({ ok: true, token: data.token, roomId: data.room_id });
         } catch (e) {
-          sendResponse({ ok: false, error: e.message || '网络错误' });
+          sendResponse({ ok: false, error: e.message || 'Network error' });
         }
       })();
       return true;
@@ -583,7 +557,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           const s = await getSettings();
           const res = await fetch(
             `${s.serverUrl}/wt/room/check?token=${encodeURIComponent(msg.token)}`,
-            { signal: AbortSignal.timeout(5000) }
+            { headers: authHeaders(s), signal: AbortSignal.timeout(5000) }
           );
           const data = await res.json();
           sendResponse({ ok: true, data });
@@ -601,14 +575,12 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       getNickname().then(n => sendResponse({ nickname: n }));
       return true;
 
-    // 设置页测试按钮用，返回实际生效的服务器 URL（含默认值）
     case 'get_effective_server_url':
       getSettings().then(s => sendResponse({ url: s.serverUrl }));
       return true;
   }
 });
 
-// ── Tab 关闭：主页面关闭则离开房间 ────────────────
 chrome.tabs.onRemoved.addListener((tabId) => {
   if (tabId === activeTabId && currentRoom) {
     console.log('[WT] Active tab closed, leaving room');
@@ -617,7 +589,6 @@ chrome.tabs.onRemoved.addListener((tabId) => {
   }
 });
 
-// ── Tab 导航：房主离开视频平台则解散房间 ──────────
 chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
   if (tabId !== activeTabId || !currentRoom || changeInfo.status !== 'complete') return;
   const url = tab.url || '';
@@ -628,4 +599,3 @@ chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
     _broadcastToAllVideoTabs({ type: 'self_left_room' });
   }
 });
-

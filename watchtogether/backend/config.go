@@ -3,10 +3,12 @@ package main
 import (
 	"os"
 	"strconv"
+	"strings"
 )
 
 type Config struct {
 	Port             string
+	BindHost         string
 	MaxRooms         int
 	RoomTTLMinutes   int
 	TokenFailMax     int
@@ -16,20 +18,25 @@ type Config struct {
 	WSMsgPerSec      int
 	HeartbeatTimeout int
 	PromPort         string
+	AllowedOrigins   []string
+	ClientToken      string
 }
 
 func LoadConfig() Config {
 	return Config{
-		Port:           getEnv("PORT", "8892"),
-		MaxRooms:       getEnvInt("MAX_ROOMS", 10000),
-		RoomTTLMinutes: getEnvInt("ROOM_TTL_MINUTES", 60),
-		TokenFailMax:   getEnvInt("TOKEN_FAIL_MAX", 5),
+		Port:             getEnv("PORT", "8892"),
+		BindHost:         getEnv("BIND_HOST", ""),
+		MaxRooms:         getEnvInt("MAX_ROOMS", 10000),
+		RoomTTLMinutes:   getEnvInt("ROOM_TTL_MINUTES", 60),
+		TokenFailMax:     getEnvInt("TOKEN_FAIL_MAX", 5),
 		TokenBanMinutes:  getEnvInt("TOKEN_BAN_MINUTES", 10),
 		RateLimitPerMin:  getEnvInt("RATE_LIMIT_PER_MIN", 5),
 		WSMaxPerIP:       getEnvInt("WS_MAX_PER_IP", 20),
 		WSMsgPerSec:      getEnvInt("WS_MSG_PER_SEC", 10),
 		HeartbeatTimeout: getEnvInt("HEARTBEAT_TIMEOUT", 60),
 		PromPort:         getEnv("PROM_PORT", "9091"),
+		AllowedOrigins:   getEnvList("ALLOWED_ORIGINS"),
+		ClientToken:      getEnv("CLIENT_TOKEN", ""),
 	}
 }
 
@@ -47,4 +54,20 @@ func getEnvInt(key string, fallback int) int {
 		}
 	}
 	return fallback
+}
+
+func getEnvList(key string) []string {
+	raw := os.Getenv(key)
+	if raw == "" {
+		return nil
+	}
+	parts := strings.Split(raw, ",")
+	values := make([]string, 0, len(parts))
+	for _, p := range parts {
+		p = strings.TrimSpace(p)
+		if p != "" {
+			values = append(values, p)
+		}
+	}
+	return values
 }

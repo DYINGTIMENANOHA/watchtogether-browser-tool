@@ -11,7 +11,6 @@ import (
 	"github.com/rs/zerolog/log"
 )
 
-// rotatingWriter 实现按大小轮转的日志写入器，无需外部依赖
 type rotatingWriter struct {
 	mu       sync.Mutex
 	file     *os.File
@@ -55,7 +54,6 @@ func (w *rotatingWriter) Write(p []byte) (int, error) {
 
 func (w *rotatingWriter) rotate() {
 	w.file.Close()
-	// 移动旧文件：.3→删除, .2→.3, .1→.2, 当前→.1
 	for i := w.maxFiles - 1; i >= 1; i-- {
 		old := fmt.Sprintf("%s.%d", w.path, i)
 		newName := fmt.Sprintf("%s.%d", w.path, i+1)
@@ -74,13 +72,11 @@ func InitLogger() {
 
 	var writers []io.Writer
 
-	// 文件输出：JSON 格式，按大小轮转（单文件 ≤100MB，保留最近 3 个文件）
 	rw, err := newRotatingWriter(logDir+"/watchtogether.log", 100, 3)
 	if err == nil {
 		writers = append(writers, rw)
 	}
 
-	// 控制台输出
 	if os.Getenv("LOG_PRETTY") == "1" {
 		writers = append(writers, zerolog.ConsoleWriter{Out: os.Stdout, TimeFormat: time.RFC3339})
 	} else {
