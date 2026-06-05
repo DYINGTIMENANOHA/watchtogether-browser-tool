@@ -1,4 +1,4 @@
-// background.js - Service Worker
+﻿// background.js - Service Worker
 const DEFAULT_SERVER = 'https://streamforsoul.com:8443';
 
 let ws = null;
@@ -16,7 +16,7 @@ chrome.runtime.onInstalled.addListener(async (details) => {
   if (details.reason === 'install') {
     const clientId = _generateUUID();
     const nickname = _generateNickname('en');
-    chrome.storage.local.set({ clientId, nickname, firstRun: true, showBubble: true });
+    chrome.storage.local.set({ clientId, nickname, nicknameAuto: true, nicknameLang: 'en', firstRun: true, showBubble: true });
   }
 });
 
@@ -29,13 +29,13 @@ function _generateUUID() {
 
 function _generateNickname(lang) {
   if (lang === 'zh') {
-    const adj = ['快乐', '可爱', '酷炫', '神秘', '友善', '慵懒', '热情', '机智'];
-    const noun = ['小猫', '大象', '企鹅', '熊猫', '狐狸', '兔子', '松鼠', '海豚'];
+    const adj = ['\u5feb\u4e50', '\u53ef\u7231', '\u9177\u70ab', '\u795e\u79d8', '\u53cb\u5584', '\u6175\u61d2', '\u70ed\u60c5', '\u673a\u667a'];
+    const noun = ['\u5c0f\u732b', '\u5927\u8c61', '\u4f01\u9e45', '\u718a\u732b', '\u72d0\u72f8', '\u5154\u5b50', '\u677e\u9f20', '\u6d77\u8c5a'];
     return adj[Math.floor(Math.random() * adj.length)] + noun[Math.floor(Math.random() * noun.length)];
   }
   if (lang === 'ja') {
-    const adj = ['元気な', 'かわいい', 'おしゃれな', 'ふしぎな', 'のんびり', 'かしこい', 'たのしい', 'やさしい'];
-    const noun = ['ネコ', 'パンダ', 'キツネ', 'ウサギ', 'クマ', 'タヌキ', 'リス', 'ペンギン'];
+    const adj = ['\u5143\u6c17\u306a', '\u304b\u308f\u3044\u3044', '\u304a\u3057\u3083\u308c\u306a', '\u3075\u3057\u304e\u306a', '\u306e\u3093\u3073\u308a', '\u304b\u3057\u3053\u3044', '\u305f\u306e\u3057\u3044', '\u3084\u3055\u3057\u3044'];
+    const noun = ['\u30cd\u30b3', '\u30d1\u30f3\u30c0', '\u30ad\u30c4\u30cd', '\u30a6\u30b5\u30ae', '\u30af\u30de', '\u30bf\u30cc\u30ad', '\u30ea\u30b9', '\u30da\u30f3\u30ae\u30f3'];
     return adj[Math.floor(Math.random() * adj.length)] + noun[Math.floor(Math.random() * noun.length)];
   }
   const adj = ['Happy', 'Cool', 'Curious', 'Friendly', 'Lazy', 'Clever', 'Brave', 'Silly'];
@@ -43,6 +43,13 @@ function _generateNickname(lang) {
   return adj[Math.floor(Math.random() * adj.length)] + noun[Math.floor(Math.random() * noun.length)];
 }
 
+function _looksAutoNickname(name) {
+  if (!name) return false;
+  const english = /^(Happy|Cool|Curious|Friendly|Lazy|Clever|Brave|Silly)(Cat|Panda|Fox|Bunny|Bear|Wolf|Tiger|Penguin)$/;
+  const chinese = /^(快乐|可爱|酷炫|神秘|友善|慵懒|热情|机智)(小猫|大象|企鹅|熊猫|狐狸|兔子|松鼠|海豚)$/;
+  const japanese = /^(元気な|かわいい|おしゃれな|ふしぎな|のんびり|かしこい|たのしい|やさしい)(ネコ|パンダ|キツネ|ウサギ|クマ|タヌキ|リス|ペンギン)$/;
+  return english.test(name) || chinese.test(name) || japanese.test(name);
+}
 async function getClientId() {
   if (_cachedClientId) return _cachedClientId;
   return new Promise(resolve => {
@@ -71,10 +78,12 @@ async function getSettings() {
 
 async function getNickname() {
   return new Promise(resolve => {
-    chrome.storage.local.get({ nickname: '', lang: 'en' }, s => {
-      if (s.nickname) { resolve(s.nickname); return; }
-      const n = _generateNickname(s.lang || 'en');
-      chrome.storage.local.set({ nickname: n });
+    chrome.storage.local.get({ nickname: '', lang: 'en', nicknameAuto: null, nicknameLang: '' }, s => {
+      const lang = s.lang || 'en';
+      const auto = s.nicknameAuto === true || (s.nicknameAuto === null && _looksAutoNickname(s.nickname));
+      if (s.nickname && (!auto || s.nicknameLang === lang)) { resolve(s.nickname); return; }
+      const n = _generateNickname(lang);
+      chrome.storage.local.set({ nickname: n, nicknameAuto: true, nicknameLang: lang });
       resolve(n);
     });
   });

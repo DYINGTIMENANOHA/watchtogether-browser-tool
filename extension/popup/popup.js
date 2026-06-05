@@ -110,6 +110,14 @@ function escHtml(s) {
   return (s || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 }
 
+function autoNicknameLang(name) {
+  if (!name) return '';
+  if (/^(Happy|Cool|Curious|Friendly|Lazy|Clever|Brave|Silly)(Cat|Panda|Fox|Bunny|Bear|Wolf|Tiger|Penguin)$/.test(name)) return 'en';
+  if (/^(快乐|可爱|酷炫|神秘|友善|慵懒|热情|机智)(小猫|大象|企鹅|熊猫|狐狸|兔子|松鼠|海豚)$/.test(name)) return 'zh';
+  if (/^(元気な|かわいい|おしゃれな|ふしぎな|のんびり|かしこい|たのしい|やさしい)(ネコ|パンダ|キツネ|ウサギ|クマ|タヌキ|リス|ペンギン)$/.test(name)) return 'ja';
+  return '';
+}
+
 async function checkFirstRun() {
   return new Promise(r => {
     chrome.storage.local.get({ firstRun: false, nickname: '' }, s => {
@@ -228,7 +236,8 @@ $('btn-firstrun-save').addEventListener('click', () => {
   const nick = $('firstrun-nick').value.trim();
   if (!nick) { $('firstrun-err').textContent = t('firstrun_err_empty'); return; }
   if (nick.length > 20) { $('firstrun-err').textContent = t('firstrun_err_long'); return; }
-  chrome.storage.local.set({ nickname: nick, firstRun: false }, () => {
+  const nicknameLang = autoNicknameLang(nick);
+  chrome.storage.local.set({ nickname: nick, nicknameAuto: !!nicknameLang, nicknameLang, firstRun: false }, () => {
     $('firstrun-err').textContent = '';
     init();
   });

@@ -21,14 +21,24 @@ async function initSettings() {
   document.getElementById('client-id-display').textContent = stored.clientId || t('client_id_missing');
 }
 
+function autoNicknameLang(name) {
+  if (!name) return '';
+  if (/^(Happy|Cool|Curious|Friendly|Lazy|Clever|Brave|Silly)(Cat|Panda|Fox|Bunny|Bear|Wolf|Tiger|Penguin)$/.test(name)) return 'en';
+  if (/^(快乐|可爱|酷炫|神秘|友善|慵懒|热情|机智)(小猫|大象|企鹅|熊猫|狐狸|兔子|松鼠|海豚)$/.test(name)) return 'zh';
+  if (/^(元気な|かわいい|おしゃれな|ふしぎな|のんびり|かしこい|たのしい|やさしい)(ネコ|パンダ|キツネ|ウサギ|クマ|タヌキ|リス|ペンギン)$/.test(name)) return 'ja';
+  return '';
+}
+
 document.getElementById('btn-save').addEventListener('click', () => {
   const lang = document.getElementById('lang-select').value;
   const nickname = document.getElementById('nickname').value.trim();
   const serverUrl = document.getElementById('server-url').value.trim();
   const serverToken = document.getElementById('server-token').value.trim();
   const showBubble = document.getElementById('toggle-bubble').checked;
+  const nicknameLang = autoNicknameLang(nickname);
+  const nicknameAuto = !nickname || !!nicknameLang;
 
-  chrome.storage.local.set({ lang, nickname, serverUrl, serverToken, showBubble }, () => {
+  chrome.storage.local.set({ lang, nickname, nicknameAuto, nicknameLang: nickname ? nicknameLang : lang, serverUrl, serverToken, showBubble }, () => {
     setLang(lang);
     applyI18n();
     const msg = document.getElementById('saved-msg');
