@@ -41,10 +41,6 @@ input:checked+.toggle-slider::after{transform:translateX(16px);}
 .help-box strong{display:block;margin-bottom:4px;color:#333;font-size:12px;}
 .help-box a{color:#ff4e4e;text-decoration:none;}
 .help-box a:hover{text-decoration:underline;}
-.help-box .disabled{color:#aaa;pointer-events:none;}
-.about-toggle{cursor:pointer;user-select:none;display:flex;align-items:center;justify-content:space-between;}
-.about-toggle::after{content:'v';font-size:11px;color:#bbb;transition:transform .2s;}
-.about-toggle.open::after{content:'^';}
 .about-body{margin-top:4px;margin-bottom:8px;}
 .about-row{display:flex;align-items:center;justify-content:space-between;padding:6px 0;border-bottom:1px solid #f5f5f5;font-size:13px;}
 .about-row:last-child{border-bottom:none;}
@@ -52,7 +48,6 @@ input:checked+.toggle-slider::after{transform:translateX(16px);}
 .about-val{color:#333;text-align:right;}
 .about-link{color:#ff4e4e;text-decoration:none;text-align:right;}
 .about-link:hover{text-decoration:underline;}
-.about-link.disabled{color:#aaa;pointer-events:none;}
 </style>
 </head>
 <body>
@@ -75,7 +70,7 @@ input:checked+.toggle-slider::after{transform:translateX(16px);}
       <span data-i18n="selfhost_help_body">You can run your own relay server using the backend in this repository.</span>
       <div style="margin-top:6px;">
         <span data-i18n="selfhost_repo_label">Repository:</span>
-        <a id="selfhost-repo-link" class="disabled" href="#" target="_blank" data-i18n="selfhost_repo_val">(coming soon)</a>
+        <a id="selfhost-repo-link" href="https://github.com/DYINGTIMENANOHA/watchtogether-browser-tool" target="_blank" rel="noopener" data-i18n="selfhost_repo_val">GitHub repository</a>
       </div>
     </div>
     <div class="inline-row">
@@ -95,6 +90,8 @@ input:checked+.toggle-slider::after{transform:translateX(16px);}
     <label for="lang-select" data-i18n="language_label">Language</label>
     <select id="lang-select">
       <option value="en">English</option>
+      <option value="zh">中文</option>
+      <option value="ja">日本語</option>
     </select>
   </div>
 
@@ -108,19 +105,19 @@ input:checked+.toggle-slider::after{transform:translateX(16px);}
   </div>
   <div class="hint" style="margin-top:4px;margin-bottom:16px;" data-i18n="show_bubble_hint">Shows the sync entry button on video pages.</div>
 
-  <div class="section-title about-toggle" id="about-toggle" data-i18n="about_section">About</div>
-  <div id="about-body" class="about-body" style="display:none">
+  <div class="section-title" data-i18n="about_section">About</div>
+  <div id="about-body" class="about-body">
     <div class="about-row">
       <span class="about-key" data-i18n="about_version">Version</span>
       <span class="about-val">1.1.0</span>
     </div>
     <div class="about-row">
       <span class="about-key" data-i18n="about_author">Author</span>
-      <span class="about-val" data-i18n="about_author_val">-</span>
+      <span class="about-val" data-i18n="about_author_val">DYINGTIMENANOHA</span>
     </div>
     <div class="about-row">
       <span class="about-key" data-i18n="about_github">GitHub</span>
-      <a id="about-github-link" class="about-link disabled" href="#" target="_blank" data-i18n="about_github_val">(coming soon)</a>
+      <a id="about-github-link" class="about-link" href="https://github.com/DYINGTIMENANOHA/watchtogether-browser-tool" target="_blank" rel="noopener" data-i18n="about_github_val">GitHub repository</a>
     </div>
     <div class="about-row">
       <span class="about-key" data-i18n="about_license">License</span>

@@ -28,6 +28,16 @@ function _generateUUID() {
 }
 
 function _generateNickname(lang) {
+  if (lang === 'zh') {
+    const adj = ['快乐', '可爱', '酷炫', '神秘', '友善', '慵懒', '热情', '机智'];
+    const noun = ['小猫', '大象', '企鹅', '熊猫', '狐狸', '兔子', '松鼠', '海豚'];
+    return adj[Math.floor(Math.random() * adj.length)] + noun[Math.floor(Math.random() * noun.length)];
+  }
+  if (lang === 'ja') {
+    const adj = ['元気な', 'かわいい', 'おしゃれな', 'ふしぎな', 'のんびり', 'かしこい', 'たのしい', 'やさしい'];
+    const noun = ['ネコ', 'パンダ', 'キツネ', 'ウサギ', 'クマ', 'タヌキ', 'リス', 'ペンギン'];
+    return adj[Math.floor(Math.random() * adj.length)] + noun[Math.floor(Math.random() * noun.length)];
+  }
   const adj = ['Happy', 'Cool', 'Curious', 'Friendly', 'Lazy', 'Clever', 'Brave', 'Silly'];
   const noun = ['Cat', 'Panda', 'Fox', 'Bunny', 'Bear', 'Wolf', 'Tiger', 'Penguin'];
   return adj[Math.floor(Math.random() * adj.length)] + noun[Math.floor(Math.random() * noun.length)];

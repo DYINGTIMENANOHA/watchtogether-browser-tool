@@ -10,26 +10,26 @@ async function initSettings() {
     }, r)
   );
 
-  setLang('en');
+  setLang(stored.lang);
   applyI18n();
 
   document.getElementById('nickname').value = stored.nickname;
   document.getElementById('server-url').value = stored.serverUrl;
   document.getElementById('server-token').value = stored.serverToken || '';
   document.getElementById('toggle-bubble').checked = stored.showBubble !== false;
-  document.getElementById('lang-select').value = 'en';
+  document.getElementById('lang-select').value = stored.lang || 'en';
   document.getElementById('client-id-display').textContent = stored.clientId || t('client_id_missing');
 }
 
 document.getElementById('btn-save').addEventListener('click', () => {
-  const lang = 'en';
+  const lang = document.getElementById('lang-select').value;
   const nickname = document.getElementById('nickname').value.trim();
   const serverUrl = document.getElementById('server-url').value.trim();
   const serverToken = document.getElementById('server-token').value.trim();
   const showBubble = document.getElementById('toggle-bubble').checked;
 
   chrome.storage.local.set({ lang, nickname, serverUrl, serverToken, showBubble }, () => {
-    setLang('en');
+    setLang(lang);
     applyI18n();
     const msg = document.getElementById('saved-msg');
     msg.textContent = t('saved_ok');
@@ -51,21 +51,13 @@ document.getElementById('btn-reset').addEventListener('click', () => {
 });
 
 document.getElementById('lang-select').addEventListener('change', () => {
-  setLang('en');
+  setLang(document.getElementById('lang-select').value);
   applyI18n();
 });
 
 document.getElementById('btn-selfhost-help').addEventListener('click', () => {
   const box = document.getElementById('selfhost-help-box');
   box.style.display = box.style.display === 'none' ? '' : 'none';
-});
-
-document.getElementById('about-toggle').addEventListener('click', () => {
-  const body = document.getElementById('about-body');
-  const toggle = document.getElementById('about-toggle');
-  const open = body.style.display === 'none';
-  body.style.display = open ? '' : 'none';
-  toggle.classList.toggle('open', open);
 });
 
 document.getElementById('btn-test').addEventListener('click', async () => {
