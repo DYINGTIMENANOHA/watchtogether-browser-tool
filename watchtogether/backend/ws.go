@@ -318,6 +318,8 @@ func handleWS(cfg Config) http.HandlerFunc {
 						"is_live":   room.IsLive,
 						"host_name": hello.Name,
 						"sync_all":  true,
+						"seek_time": room.CurrentTime,
+						"paused":    room.Paused,
 					}
 					for s, m := range room.Members {
 						if s != sid {
@@ -429,8 +431,10 @@ func handleSyncAction(room *Room, sender *Member, msg WSMessage, cfg Config) {
 	if action == "seek" {
 		room.CurrentTime = seekTime
 	} else if action == "play" {
+		room.CurrentTime = seekTime
 		room.Paused = false
 	} else if action == "pause" {
+		room.CurrentTime = seekTime
 		room.Paused = true
 	}
 
@@ -483,6 +487,8 @@ func handleSyncAction(room *Room, sender *Member, msg WSMessage, cfg Config) {
 				"type":      "catch_up_result",
 				"seek_time": seekTarget,
 				"paused":    r.Paused,
+				"video_id":  r.VideoID,
+				"platform":  r.Platform,
 			}
 			for sid, m := range r.Members {
 				if sid != pa.SenderSID {
@@ -501,6 +507,8 @@ func executeSyncAction(room *Room, action string, seekTime float64, senderSID st
 		"type":      "sync_apply",
 		"action":    action,
 		"seek_time": seekTime,
+		"video_id":  room.VideoID,
+		"platform":  room.Platform,
 	}
 	for sid, m := range room.Members {
 		if sid == senderSID {
@@ -532,6 +540,8 @@ func handleCatchUp(room *Room, member *Member) {
 		"type":      "catch_up_result",
 		"seek_time": room.CurrentTime,
 		"paused":    room.Paused,
+		"video_id":  room.VideoID,
+		"platform":  room.Platform,
 	})
 }
 
@@ -539,7 +549,12 @@ func handleVideoChanged(room *Room, host *Member, msg WSMessage) {
 	room.VideoID = msg.VideoID
 	room.Platform = msg.Platform
 	room.IsLive = msg.IsLive
-	room.CurrentTime = 0
+	if validateSeekTime(msg.SeekTime) {
+		room.CurrentTime = msg.SeekTime
+	} else {
+		room.CurrentTime = 0
+	}
+	room.Paused = msg.Action == "paused"
 	room.HostSearching = false
 
 	notifyMsg := map[string]any{
@@ -548,6 +563,8 @@ func handleVideoChanged(room *Room, host *Member, msg WSMessage) {
 		"platform":  msg.Platform,
 		"is_live":   msg.IsLive,
 		"host_name": host.Name,
+		"seek_time": room.CurrentTime,
+		"paused":    room.Paused,
 	}
 	for sid, m := range room.Members {
 		if sid != room.HostSID {

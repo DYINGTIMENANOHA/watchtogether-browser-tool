@@ -33,8 +33,12 @@ class YouTubeAdapter {
   init() { this._findVideo(); this._watchVideoElement(); this._watchSPANavigation(); this._lastVideoId = this.getVideoId(); }
   destroy() { for (const [el,t,f] of this._listeners) el.removeEventListener(t,f); this._listeners = []; this._video = null; }
   _findVideo() {
-    this._video = document.querySelector('video.html5-main-video') || document.querySelector('video');
-    if (this._video) this._attachVideoListeners();
+    const video = document.querySelector('video.html5-main-video') || document.querySelector('video');
+    if (!video || video === this._video) return;
+    for (const [el,t,f] of this._listeners) el.removeEventListener(t,f);
+    this._listeners = [];
+    this._video = video;
+    this._attachVideoListeners();
   }
   _attachVideoListeners() {
     const v = this._video;

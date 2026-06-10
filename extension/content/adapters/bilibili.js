@@ -3,7 +3,7 @@ class BilibiliAdapter {
     this._video = null; this._onPlayCb = null; this._onPauseCb = null;
     this._onSeekCb = null; this._onVideoChangeCb = null;
     this._seekDebounce = null; this._suppressEvents = false;
-    this._lastVideoId = null; this._listeners = []; this._urlObserver = null;
+    this._lastVideoId = null; this._listeners = []; this._urlObserver = null; this._urlPollTimer = null;
   }
   getVideoId() {
     const m = location.pathname.match(/\/video\/((?:BV|AV|av|bv)\w+)/i);
@@ -35,7 +35,13 @@ class BilibiliAdapter {
   onSeek(cb) { this._onSeekCb = cb; }
   onVideoChange(cb) { this._onVideoChangeCb = cb; }
   init() { this._findVideo(); this._watchSPANavigation(); this._lastVideoId = this.getVideoId(); }
-  destroy() { for (const [el,t,f] of this._listeners) el.removeEventListener(t,f); this._listeners = []; if (this._urlObserver) this._urlObserver.disconnect(); this._video = null; }
+  destroy() {
+    for (const [el,t,f] of this._listeners) el.removeEventListener(t,f);
+    this._listeners = [];
+    if (this._urlObserver) this._urlObserver.disconnect();
+    if (this._urlPollTimer) clearInterval(this._urlPollTimer);
+    this._video = null;
+  }
   _findVideo() {
     const videos = Array.from(document.querySelectorAll('video'));
     if (!videos.length) { setTimeout(() => this._findVideo(), 1000); return; }
@@ -59,7 +65,7 @@ class BilibiliAdapter {
   }
   _watchSPANavigation() {
     let lastUrl = location.href;
-    this._urlObserver = new MutationObserver(() => {
+    const checkUrl = () => {
       if (location.href !== lastUrl) {
         lastUrl = location.href;
         const newId = this.getVideoId();
@@ -68,7 +74,9 @@ class BilibiliAdapter {
           setTimeout(() => { this._findVideo(); this._onVideoChangeCb && this._onVideoChangeCb(newId, this.isLive()); }, 1500);
         }
       }
-    });
+    };
+    this._urlObserver = new MutationObserver(checkUrl);
     this._urlObserver.observe(document.body, { childList: true, subtree: true });
+    this._urlPollTimer = setInterval(checkUrl, 1000);
   }
 }

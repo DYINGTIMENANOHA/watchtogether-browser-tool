@@ -7,12 +7,12 @@
   "host_permissions": [
     "https://www.youtube.com/*",
     "https://www.bilibili.com/*",
+    "https://search.bilibili.com/*",
     "https://streamforsoul.com/*"
   ],
   "minimum_chrome_version": "103",
   "background": {
-    "service_worker": "background.js",
-    "scripts": ["background.js"]
+    "service_worker": "background.js"
   },
   "action": {
     "default_popup": "popup/popup.html",
@@ -31,7 +31,7 @@
       "run_at": "document_idle"
     },
     {
-      "matches": ["https://www.bilibili.com/*"],
+      "matches": ["https://www.bilibili.com/*", "https://search.bilibili.com/*"],
       "js": ["i18n/strings.js", "content/adapters/bilibili.js", "content/content.js"],
       "css": ["content/overlay.css"],
       "run_at": "document_idle"

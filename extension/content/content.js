@@ -22,7 +22,7 @@ let panelVisible = false;
 let bubbleHidden = false;
 
 let vetoBanner = null, vetoTimerId = null;
-let switchBanner = null, switchTimerId = null;
+let switchBanner = null;
 let infoBanner = null, infoTimerId = null;
 
 function initOverlay() {
@@ -356,9 +356,7 @@ function renderIdlePanel() {
       panelVisible = false; panel.style.display = 'none';
       updateBubble();
       if (info.video_id && !info.host_searching) {
-        const url = info.platform === 'youtube'
-          ? `https://www.youtube.com/watch?v=${info.video_id}`
-          : `https://www.bilibili.com/video/${info.video_id}/`;
+        const url = getVideoUrl(info.video_id, info.platform);
         if (!location.href.includes(info.video_id)) location.href = url;
       }
     });
@@ -444,30 +442,27 @@ function renderHostTransferPanel() {
     btn.disabled = true; btn.textContent = t('transfer_btn_loading');
     if (errEl) errEl.textContent = '';
 
-    chrome.runtime.sendMessage({ type: 'get_nickname' }, r => {
-      const nickname = r?.nickname || '';
+    chrome.runtime.sendMessage({ type: 'take_active_tab' }, res => {
+      if (!res?.ok) {
+        if (errEl) errEl.textContent = res?.error || t('err_create_failed');
+        btn.disabled = false; btn.textContent = t('transfer_btn');
+        return;
+      }
+      isActiveTab = true;
+      currentVideoId = videoId;
+      currentPlatform = platform;
+      hostSearching = false;
       chrome.runtime.sendMessage({
-        type:        'transfer_room',
+        type: 'video_changed',
         videoId,
         platform,
-        title:       getVideoTitle(),
+        isLive: adapter?.isLive() || false,
         currentTime: adapter?.getCurrentTime() || 0,
-        paused:      adapter?.isPaused() !== false,
-        isLive:      adapter?.isLive() || false,
-        nickname,
-      }, res => {
-        if (!res?.ok) {
-          if (errEl) errEl.textContent = res?.error || t('err_create_failed');
-          btn.disabled = false; btn.textContent = t('transfer_btn');
-          return;
-        }
-        currentToken    = res.token;
-        currentVideoId  = videoId;
-        currentPlatform = platform;
-        isActiveTab = true; isInRoom = true; isHost = true;
-        panelVisible = false; panel.style.display = 'none';
-        updateBubble();
+        paused: adapter?.isPaused() !== false,
       });
+      panelVisible = false; panel.style.display = 'none';
+      renderHostPanel();
+      updateBubble();
     });
   });
 }
@@ -570,6 +565,11 @@ function renderHostPanel() {
     secInput.value = s.vetoSeconds;
     if (guestChk) guestChk.checked = s.allowGuestControl;
     secRow.style.display = s.vetoEnabled ? 'flex' : 'none';
+
+    // Always resync to server on panel render — covers video-change / service-worker-restart scenarios
+    // where the server's room config may have drifted from stored preferences.
+    chrome.runtime.sendMessage({ type: 'veto_config', enabled: s.vetoEnabled, seconds: s.vetoSeconds });
+    chrome.runtime.sendMessage({ type: 'guest_control_config', allowed: s.allowGuestControl || false });
 
     vetoChk.addEventListener('change', () => {
       const enabled = vetoChk.checked;
@@ -679,6 +679,19 @@ function getVideoTitle() {
     .trim();
 }
 
+function getVideoUrl(videoId, platform) {
+  if (!videoId || !platform) return '';
+  return platform === 'youtube'
+    ? `https://www.youtube.com/watch?v=${videoId}`
+    : `https://www.bilibili.com/video/${videoId}/`;
+}
+
+function isCurrentRoomVideo(videoId = currentVideoId, platform = currentPlatform) {
+  if (hostSearching) return false;
+  if (!adapter || !videoId || !platform) return false;
+  return adapter.getPlatform() === platform && adapter.getVideoId() === videoId;
+}
+
 function getHashCode() {
   const hashMatch = location.hash.match(/[#&]wt-code=([^&]+)/);
   if (hashMatch) return hashMatch[1];
@@ -696,165 +709,71 @@ function showInfo(text, duration = 4000) {
   infoTimerId = setTimeout(() => { infoBanner?.remove(); infoBanner = null; }, duration);
 }
 
-function showVetoBanner(senderName, action, seconds) {
+function showVetoBanner(seconds) {
   const b = getBanners();
   if (!b) return;
   clearInterval(vetoTimerId); vetoTimerId = null;
   vetoBanner?.remove(); vetoBanner = null;
 
-  const getVetoText = (name, act) => {
-    if (act === 'seek')  return t('banner_veto_seek',  { name });
-    if (act === 'play')  return t('banner_veto_play',  { name });
-    if (act === 'pause') return t('banner_veto_pause', { name });
-    return name + ' ' + act;
-  };
   let remaining = seconds;
-
   vetoBanner = document.createElement('div');
   vetoBanner.className = 'wt-banner veto';
+  vetoBanner.innerHTML = `
+    <span class="wt-banner-text">${t('banner_veto_will_follow', { sec: remaining })}</span>
+    <button class="wt-bBtn ok" id="wt-veto-follow">${t('banner_veto_follow_now')}</button>
+    <button class="wt-bBtn danger" id="wt-veto-deny">${t('banner_veto_deny')}</button>
+  `;
   b.appendChild(vetoBanner);
 
-  const render = () => {
-    if (!vetoBanner) return;
-    vetoBanner.innerHTML = `
-      <span class="wt-banner-text">${getVetoText(escHtml(senderName), action)}</span>
-      <span class="wt-cd">${remaining}s</span>
-      <button class="wt-bBtn danger" id="wt-veto-btn">${t('banner_veto_deny')}</button>
-    `;
-    vetoBanner.querySelector('#wt-veto-btn')?.addEventListener('click', () => {
-      chrome.runtime.sendMessage({ type: 'veto' });
-      clearInterval(vetoTimerId); vetoTimerId = null;
-      vetoBanner?.remove(); vetoBanner = null;
-    });
-  };
-  render();
+  vetoBanner.querySelector('#wt-veto-follow')?.addEventListener('click', () => {
+    clearInterval(vetoTimerId); vetoTimerId = null;
+    vetoBanner?.remove(); vetoBanner = null;
+    chrome.runtime.sendMessage({ type: 'catch_up' });
+  });
+  vetoBanner.querySelector('#wt-veto-deny')?.addEventListener('click', () => {
+    clearInterval(vetoTimerId); vetoTimerId = null;
+    vetoBanner?.remove(); vetoBanner = null;
+    chrome.runtime.sendMessage({ type: 'veto' });
+  });
+
   vetoTimerId = setInterval(() => {
     remaining--;
-    if (remaining <= 0) { clearInterval(vetoTimerId); vetoTimerId = null; vetoBanner?.remove(); vetoBanner = null; }
-    else render();
-  }, 1000);
-}
-
-function showSwitchBanner(hostName, videoId, platform, autoLeave = true) {
-  const b = getBanners();
-  if (!b) return;
-  clearInterval(switchTimerId); switchTimerId = null;
-  switchBanner?.remove(); switchBanner = null;
-
-  let remaining = 30;
-  switchBanner = document.createElement('div');
-  switchBanner.className = 'wt-banner switch';
-  b.appendChild(switchBanner);
-
-  const targetUrl = platform === 'youtube'
-    ? `https://www.youtube.com/watch?v=${videoId}`
-    : `https://www.bilibili.com/video/${videoId}/`;
-
-  const render = () => {
-    if (!switchBanner) return;
-    switchBanner.innerHTML = `
-      <span class="wt-banner-text">${t('banner_switch_text', { name: escHtml(hostName) })}</span>
-      <span class="wt-cd">${remaining}s</span>
-      <button class="wt-bBtn ok" id="wt-sw-follow">${t('banner_switch_follow')}</button>
-      <button class="wt-bBtn danger" id="wt-sw-leave">${t('banner_switch_leave')}</button>
-    `;
-    switchBanner.querySelector('#wt-sw-follow')?.addEventListener('click', () => {
-      clearInterval(switchTimerId); switchTimerId = null;
-      switchBanner?.remove(); switchBanner = null;
-      if (hostSearching) {
-        showInfo(t('banner_switch_host_searching'), 3000);
-        return;
-      }
-      location.href = targetUrl;
-    });
-    switchBanner.querySelector('#wt-sw-leave')?.addEventListener('click', () => {
-      clearInterval(switchTimerId); switchTimerId = null;
-      switchBanner?.remove(); switchBanner = null;
-      chrome.runtime.sendMessage({ type: 'leave_room' });
-      isInRoom = false; isHost = false; currentMembers = [];
-      updateBubble();
-      showInfo(t('info_left_room'), 3000);
-    });
-  };
-  render();
-
-  switchTimerId = setInterval(() => {
-    remaining--;
     if (remaining <= 0) {
-      clearInterval(switchTimerId); switchTimerId = null;
-      switchBanner?.remove(); switchBanner = null;
-      if (autoLeave) {
-        chrome.runtime.sendMessage({ type: 'leave_room' });
-        isInRoom = false; isHost = false; currentMembers = [];
-        updateBubble();
-        showInfo(t('banner_auto_left'), 4000);
-      }
+      clearInterval(vetoTimerId); vetoTimerId = null;
+      vetoBanner?.remove(); vetoBanner = null;
     } else {
-      render();
+      const textEl = vetoBanner?.querySelector('.wt-banner-text');
+      if (textEl) textEl.textContent = t('banner_veto_will_follow', { sec: remaining });
     }
   }, 1000);
 }
 
-function showTransferBanner(newToken, hostName, newVideoId, newPlatform, title) {
+function showSwitchBanner(hostName, videoId, platform) {
   const b = getBanners();
   if (!b) return;
+  switchBanner?.remove(); switchBanner = null;
 
-  let remaining = 30;
-  let timerId = null;
-  const el = document.createElement('div');
-  el.className = 'wt-banner switch';
-  b.appendChild(el);
+  switchBanner = document.createElement('div');
+  switchBanner.className = 'wt-banner switch';
+  const targetUrl = getVideoUrl(videoId, platform);
+  switchBanner.innerHTML = `
+    <span class="wt-banner-text">${t('banner_switch_text', { name: escHtml(hostName) })}</span>
+    <button class="wt-bBtn ok" id="wt-sw-follow">${t('banner_switch_follow')}</button>
+    <button class="wt-bBtn danger" id="wt-sw-leave">${t('banner_switch_leave')}</button>
+  `;
+  b.appendChild(switchBanner);
 
-  const dismiss = () => { clearInterval(timerId); timerId = null; el.remove(); };
-
-  const doFollow = () => {
-    chrome.runtime.sendMessage({ type: 'get_nickname' }, r => {
-      const nickname = r?.nickname || '';
-      chrome.runtime.sendMessage({ type: 'api_join_room', token: newToken, nickname }, res => {
-        if (!res?.ok) { showInfo(res?.error || t('panel_err_failed'), 3000); return; }
-        const info = res.data;
-        chrome.runtime.sendMessage({
-          type:          'connect_room',
-          roomId:        info.room_id,
-          isHost:        false,
-          hostName:      info.host_name,
-          videoId:       info.video_id,
-          platform:      info.platform,
-          nickname,
-          hostSearching: info.host_searching || false,
-          tabId:         null,
-          joinToken:     newToken,
-          title:         info.title || title || '',
-        });
-        isInRoom = true; isHost = false; isActiveTab = true;
-        currentHostName = info.host_name;
-        updateBubble();
-        if (info.video_id && !info.host_searching) {
-          const url = info.platform === 'youtube'
-            ? `https://www.youtube.com/watch?v=${info.video_id}`
-            : `https://www.bilibili.com/video/${info.video_id}/`;
-          if (!location.href.includes(info.video_id)) location.href = url;
-        }
-      });
-    });
-  };
-
-  const render = () => {
-    el.innerHTML = `
-      <span class="wt-banner-text">${t('banner_transfer_text', { name: escHtml(hostName || '?') })}</span>
-      <span class="wt-cd">${remaining}s</span>
-      <button class="wt-bBtn ok" id="wt-tf-follow">${t('banner_transfer_follow')}</button>
-      <button class="wt-bBtn danger" id="wt-tf-leave">${t('banner_transfer_leave')}</button>
-    `;
-    el.querySelector('#wt-tf-follow')?.addEventListener('click', () => { dismiss(); doFollow(); });
-    el.querySelector('#wt-tf-leave')?.addEventListener('click', () => { dismiss(); showInfo(t('info_left_room'), 3000); });
-  };
-
-  render();
-  timerId = setInterval(() => {
-    remaining--;
-    if (remaining <= 0) { dismiss(); } else { render(); }
-  }, 1000);
+  switchBanner.querySelector('#wt-sw-follow')?.addEventListener('click', () => {
+    switchBanner?.remove(); switchBanner = null;
+    location.href = targetUrl;
+  });
+  switchBanner.querySelector('#wt-sw-leave')?.addEventListener('click', () => {
+    switchBanner?.remove(); switchBanner = null;
+    chrome.runtime.sendMessage({ type: 'leave_room' });
+    isInRoom = false; isHost = false; currentMembers = [];
+    updateBubble();
+    showInfo(t('info_left_room'), 3000);
+  });
 }
 
 function showLostBanner(hostName) {
@@ -935,22 +854,37 @@ function initAdapter() {
   adapter.init();
 
   adapter.onPlay(() => {
-    if (!isInRoom || !isActiveTab || suppressEvents) return;
+    if (!isInRoom || !isActiveTab || suppressEvents || !isCurrentRoomVideo()) return;
     chrome.runtime.sendMessage({ type: 'sync_action', action: 'play', seekTime: adapter.getCurrentTime() });
   });
   adapter.onPause(() => {
-    if (!isInRoom || !isActiveTab || suppressEvents) return;
+    if (!isInRoom || !isActiveTab || suppressEvents || !isCurrentRoomVideo()) return;
     chrome.runtime.sendMessage({ type: 'sync_action', action: 'pause', seekTime: adapter.getCurrentTime() });
   });
   adapter.onSeek(time => {
-    if (!isInRoom || !isActiveTab || suppressEvents) return;
+    if (!isInRoom || !isActiveTab || suppressEvents || !isCurrentRoomVideo()) return;
     chrome.runtime.sendMessage({ type: 'sync_action', action: 'seek', seekTime: time });
   });
   adapter.onVideoChange((videoId, isLive) => {
     if (!isInRoom || !isActiveTab) return;
     if (isHost) {
-      chrome.runtime.sendMessage({ type: 'video_changed', videoId, platform: adapter.getPlatform(), isLive });
-      if (videoId) { currentVideoId = videoId; currentPlatform = adapter.getPlatform(); }
+      const platform = adapter.getPlatform();
+      chrome.runtime.sendMessage({
+        type: 'video_changed',
+        videoId,
+        platform,
+        isLive,
+        currentTime: videoId ? adapter.getCurrentTime() : 0,
+        paused: videoId ? adapter.isPaused() : true,
+      });
+      if (videoId) {
+        currentVideoId = videoId;
+        currentPlatform = platform;
+        hostSearching = false;
+      } else {
+        hostSearching = true;
+      }
+      updateBubble();
     } else if (currentVideoId && (!videoId || videoId !== currentVideoId)) {
       chrome.runtime.sendMessage({ type: 'leave_room' });
       isInRoom = false; isHost = false; currentMembers = [];
@@ -961,7 +895,7 @@ function initAdapter() {
   });
 
   positionTimer = setInterval(() => {
-    if (!isInRoom || !isHost || !isActiveTab) return;
+    if (!isInRoom || !isHost || !isActiveTab || !isCurrentRoomVideo()) return;
     chrome.runtime.sendMessage({ type: 'position_update', currentTime: adapter.getCurrentTime(), paused: adapter.isPaused() });
   }, 3000);
 }
@@ -995,13 +929,30 @@ async function onPageReady() {
                   videoId: pageVid,
                   platform: pagePlat,
                   isLive: adapter?.isLive() || false,
+                  currentTime: adapter?.getCurrentTime() || 0,
+                  paused: adapter?.isPaused() !== false,
                 });
                 currentVideoId = pageVid;
                 currentPlatform = pagePlat;
+                hostSearching = false;
+                updateBubble();
               }, 800);
+            } else if (!pageVid && currentVideoId) {
+              chrome.runtime.sendMessage({
+                type: 'video_changed',
+                videoId: '',
+                platform: pagePlat || currentPlatform,
+                isLive: false,
+                currentTime: 0,
+                paused: true,
+              });
+              hostSearching = true;
+              updateBubble();
             }
           } else {
-            setTimeout(() => chrome.runtime.sendMessage({ type: 'catch_up' }), 600);
+            setTimeout(() => {
+              if (isCurrentRoomVideo()) chrome.runtime.sendMessage({ type: 'catch_up' });
+            }, 600);
           }
         } else {
           showNonActiveBanner(isHost ? 'host' : 'guest');
@@ -1030,13 +981,12 @@ async function onPageReady() {
   initAdapter();
 }
 
-chrome.runtime.onMessage.addListener((msg) => {
+chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   switch (msg.type) {
 
     case 'ws_status':
       if (msg.status === 'reconnecting') setBubbleReconnecting();
-      else if (msg.status === 'connected') { updateBubble(); }
-      else { updateBubble(); }
+      else updateBubble();
       updateStatusInPanel(msg.status);
       break;
 
@@ -1063,6 +1013,7 @@ chrome.runtime.onMessage.addListener((msg) => {
 
     case 'sync_apply':
       if (!isInRoom || !isActiveTab) break;
+      if (!isCurrentRoomVideo(msg.videoId || currentVideoId, msg.platform || currentPlatform)) break;
       suppressEvents = true;
       if (msg.action === 'play') adapter?.play();
       else if (msg.action === 'pause') adapter?.pause();
@@ -1078,7 +1029,7 @@ chrome.runtime.onMessage.addListener((msg) => {
 
     case 'sync_opportunity':
       if (!isInRoom || !isActiveTab) break;
-      showVetoBanner(msg.hostName, msg.action, msg.delaySeconds);
+      showVetoBanner(msg.delaySeconds);
       break;
 
     case 'sync_vetoed':
@@ -1088,6 +1039,10 @@ chrome.runtime.onMessage.addListener((msg) => {
 
     case 'catch_up_result':
       if (!adapter || !isActiveTab) break;
+      if (msg.videoId && (adapter.getPlatform() !== msg.platform || adapter.getVideoId() !== msg.videoId)) {
+        location.href = getVideoUrl(msg.videoId, msg.platform);
+        break;
+      }
       suppressEvents = true;
       if (adapter.seekTo(msg.seekTime) === false) {
         suppressEvents = false;
@@ -1101,19 +1056,13 @@ chrome.runtime.onMessage.addListener((msg) => {
     case 'host_switched':
       if (!isInRoom || isHost || !isActiveTab) break;
       hostSearching = false;
-      showSwitchBanner(msg.hostName, msg.videoId, msg.platform, !msg.syncAll);
-      break;
-
-    case 'host_transferred':
-      if (!isInRoom || isHost) break;
-      isInRoom = false; isHost = false; isActiveTab = false;
-      hostSearching = false; currentMembers = []; currentToken = '';
-      clearInterval(positionTimer); positionTimer = null;
-      clearInterval(vetoTimerId); vetoTimerId = null; vetoBanner?.remove(); vetoBanner = null;
-      clearInterval(switchTimerId); switchTimerId = null; switchBanner?.remove(); switchBanner = null;
-      panelVisible = false; if (panel) panel.style.display = 'none';
-      updateBubble();
-      showTransferBanner(msg.newToken, msg.hostName, msg.newVideoId, msg.newPlatform, msg.title);
+      currentVideoId = msg.videoId || '';
+      currentPlatform = msg.platform || '';
+      if (msg.syncAll) {
+        location.href = getVideoUrl(msg.videoId, msg.platform);
+      } else {
+        showSwitchBanner(msg.hostName, msg.videoId, msg.platform);
+      }
       break;
 
     case 'host_searching':
@@ -1139,9 +1088,7 @@ chrome.runtime.onMessage.addListener((msg) => {
       isInRoom = false; isHost = false; isActiveTab = false;
       hostSearching = false; currentMembers = []; currentToken = '';
       clearInterval(positionTimer); positionTimer = null;
-      clearInterval(vetoTimerId); vetoTimerId = null;
-      vetoBanner?.remove(); vetoBanner = null;
-      clearInterval(switchTimerId); switchTimerId = null;
+      clearInterval(vetoTimerId); vetoTimerId = null; vetoBanner?.remove(); vetoBanner = null;
       switchBanner?.remove(); switchBanner = null;
       panelVisible = false; if (panel) panel.style.display = 'none';
       updateBubble();
@@ -1154,7 +1101,7 @@ chrome.runtime.onMessage.addListener((msg) => {
         hostSearching = false; currentMembers = []; currentToken = '';
         clearInterval(positionTimer); positionTimer = null;
         clearInterval(vetoTimerId); vetoTimerId = null; vetoBanner?.remove(); vetoBanner = null;
-        clearInterval(switchTimerId); switchTimerId = null; switchBanner?.remove(); switchBanner = null;
+        switchBanner?.remove(); switchBanner = null;
         panelVisible = false; if (panel) panel.style.display = 'none';
         updateBubble();
         showLostBanner(msg.hostName);
@@ -1167,7 +1114,7 @@ chrome.runtime.onMessage.addListener((msg) => {
         hostSearching = false; currentMembers = []; currentToken = '';
         clearInterval(positionTimer); positionTimer = null;
         clearInterval(vetoTimerId); vetoTimerId = null; vetoBanner?.remove(); vetoBanner = null;
-        clearInterval(switchTimerId); switchTimerId = null; switchBanner?.remove(); switchBanner = null;
+        switchBanner?.remove(); switchBanner = null;
         panelVisible = false; if (panel) panel.style.display = 'none';
         updateBubble();
       }
@@ -1183,18 +1130,12 @@ chrome.runtime.onMessage.addListener((msg) => {
       break;
 
     case 'get_player_state':
-      return;
-  }
-});
-
-chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
-  if (msg.type === 'get_player_state') {
-    sendResponse({
-      currentTime: adapter?.getCurrentTime() || 0,
-      paused: adapter?.isPaused() !== false,
-      isLive: adapter?.isLive() || false,
-    });
-    return true;
+      sendResponse({
+        currentTime: adapter?.getCurrentTime() || 0,
+        paused: adapter?.isPaused() !== false,
+        isLive: adapter?.isLive() || false,
+      });
+      return true;
   }
 });
 

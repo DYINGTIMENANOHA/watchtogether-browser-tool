@@ -10,7 +10,6 @@ let currentRoom = null;
 let mySid = null;
 let activeTabId = null;
 let _cachedClientId = null;
-let _isTransferring = false; // Suppress room_lost while the host is transferring rooms.
 
 chrome.runtime.onInstalled.addListener(async (details) => {
   if (details.reason === 'install') {
@@ -120,17 +119,31 @@ async function connectWS(roomId, name) {
 
   ws.onopen = () => {
     wsState = 'connected';
+    const wasReconnecting = currentRoom?._wasReconnecting || false;
     reconnectAttempts = 0;
     const helloMsg = { type: 'hello', name, client_id: clientId };
     ws.send(JSON.stringify(helloMsg));
     console.log('[WT] WS connected, sent hello');
 
     if (currentRoom?.isHost) {
-      if (currentRoom.vetoEnabled !== undefined) {
-        ws.send(JSON.stringify({ type: 'veto_config', action: currentRoom.vetoEnabled ? 'true' : 'false', seek_time: currentRoom.vetoSeconds || 5 }));
-      }
-      if (currentRoom.guestControlAllowed !== undefined) {
-        ws.send(JSON.stringify({ type: 'guest_control_config', allowed: currentRoom.guestControlAllowed }));
+      if (wasReconnecting) {
+        // On reconnect read from persistent storage — currentRoom may have stale/default values
+        // if the service worker was suspended and restarted between connections.
+        chrome.storage.local.get({ vetoEnabled: false, vetoSeconds: 5, allowGuestControl: false }, s => {
+          if (!currentRoom || ws?.readyState !== WebSocket.OPEN) return;
+          currentRoom.vetoEnabled = s.vetoEnabled;
+          currentRoom.vetoSeconds = s.vetoSeconds;
+          currentRoom.guestControlAllowed = s.allowGuestControl;
+          ws.send(JSON.stringify({ type: 'veto_config', action: s.vetoEnabled ? 'true' : 'false', seek_time: s.vetoSeconds }));
+          ws.send(JSON.stringify({ type: 'guest_control_config', allowed: s.allowGuestControl || false }));
+        });
+      } else {
+        if (currentRoom.vetoEnabled !== undefined) {
+          ws.send(JSON.stringify({ type: 'veto_config', action: currentRoom.vetoEnabled ? 'true' : 'false', seek_time: currentRoom.vetoSeconds || 5 }));
+        }
+        if (currentRoom.guestControlAllowed !== undefined) {
+          ws.send(JSON.stringify({ type: 'guest_control_config', allowed: currentRoom.guestControlAllowed }));
+        }
       }
     }
     _broadcastStatus('connected');
@@ -150,11 +163,6 @@ async function connectWS(roomId, name) {
       return;
     }
     if (!currentRoom) return;
-    if (_isTransferring) {
-      _isTransferring = false;
-      currentRoom = null; mySid = null; activeTabId = null;
-      return;
-    }
 
     if (reconnectAttempts < MAX_RECONNECT) {
       reconnectAttempts++;
@@ -243,7 +251,13 @@ function handleServerMessage(msg) {
       break;
 
     case 'sync_apply':
-      sendToActiveTab({ type: 'sync_apply', action: msg.action, seekTime: msg.seek_time });
+      sendToActiveTab({
+        type: 'sync_apply',
+        action: msg.action,
+        seekTime: msg.seek_time,
+        videoId: msg.video_id,
+        platform: msg.platform,
+      });
       break;
 
     case 'sync_opportunity':
@@ -255,7 +269,13 @@ function handleServerMessage(msg) {
       break;
 
     case 'catch_up_result':
-      sendToActiveTab({ type: 'catch_up_result', seekTime: msg.seek_time, paused: msg.paused });
+      sendToActiveTab({
+        type: 'catch_up_result',
+        seekTime: msg.seek_time,
+        paused: msg.paused,
+        videoId: msg.video_id,
+        platform: msg.platform,
+      });
       break;
 
     case 'host_switched':
@@ -264,7 +284,16 @@ function handleServerMessage(msg) {
         currentRoom.platform = msg.platform;
         currentRoom.hostSearching = false;
       }
-      sendToActiveTab({ type: 'host_switched', videoId: msg.video_id, platform: msg.platform, isLive: msg.is_live, hostName: msg.host_name, syncAll: msg.sync_all || false });
+      sendToActiveTab({
+        type: 'host_switched',
+        videoId: msg.video_id,
+        platform: msg.platform,
+        isLive: msg.is_live,
+        hostName: msg.host_name,
+        syncAll: msg.sync_all || false,
+        seekTime: msg.seek_time,
+        paused: msg.paused,
+      });
       break;
 
     case 'host_searching':
@@ -273,42 +302,16 @@ function handleServerMessage(msg) {
       break;
 
     case 'host_reconnecting':
-      sendToActiveTab({ type: 'host_reconnecting', hostName: msg.host_name });
       _broadcastToAllVideoTabs({ type: 'host_reconnecting', hostName: msg.host_name });
       break;
 
     case 'host_reconnected':
-      sendToActiveTab({ type: 'host_reconnected', hostName: msg.host_name });
       _broadcastToAllVideoTabs({ type: 'host_reconnected', hostName: msg.host_name });
       break;
 
-    case 'host_transferred':
-      _isTransferring = true;
-      if (msg.new_token) {
-        addToJoinHistory({
-          token:    msg.new_token,
-          hostName: msg.host_name || '',
-          platform: msg.platform || '',
-          videoId:  msg.video_id || '',
-          title:    msg.title || '',
-        });
-      }
-      sendToActiveTab({
-        type: 'host_transferred',
-        newToken:    msg.new_token,
-        newVideoId:  msg.video_id,
-        newPlatform: msg.platform,
-        title:       msg.title || '',
-        hostName:    msg.host_name || '',
-      });
-      break;
-
     case 'room_lost':
-      if (!_isTransferring) {
-        sendToActiveTab({ type: 'room_lost', hostName: msg.host_name });
-        _broadcastToAllVideoTabs({ type: 'room_dissolved', hostName: msg.host_name });
-      }
-      _isTransferring = false;
+      sendToActiveTab({ type: 'room_lost', hostName: msg.host_name });
+      _broadcastToAllVideoTabs({ type: 'room_dissolved', hostName: msg.host_name });
       currentRoom = null; mySid = null; activeTabId = null;
       break;
 
@@ -318,14 +321,12 @@ function handleServerMessage(msg) {
           currentRoom.members.push({ sid: msg.sid, name: msg.name, is_host: false });
         }
       }
-      sendToActiveTab({ type: 'member_joined', sid: msg.sid, name: msg.name });
       break;
 
     case 'member_left':
       if (currentRoom?.members) {
         currentRoom.members = currentRoom.members.filter(m => m.sid !== msg.sid);
       }
-      sendToActiveTab({ type: 'member_left', sid: msg.sid, name: msg.name });
       break;
 
     case 'member_list':
@@ -417,7 +418,14 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           currentRoom.hostSearching = false;
           currentRoom.videoId = msg.videoId;
           currentRoom.platform = msg.platform;
-          wsSend({ type: 'video_changed', video_id: msg.videoId, platform: msg.platform, is_live: msg.isLive || false });
+          wsSend({
+            type: 'video_changed',
+            video_id: msg.videoId,
+            platform: msg.platform,
+            is_live: msg.isLive || false,
+            seek_time: msg.currentTime || 0,
+            action: msg.paused ? 'paused' : 'playing',
+          });
         } else {
           currentRoom.hostSearching = true;
           wsSend({ type: 'host_searching' });
@@ -488,83 +496,17 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       })();
       return true; // async
 
-    case 'transfer_room':
-      (async () => {
-        try {
-          const [s, clientId] = await Promise.all([getSettings(), getClientId()]);
-
-          const res = await fetch(`${s.serverUrl}/wt/room/create`, {
-            method: 'POST',
-            headers: authHeaders(s, true),
-            body: JSON.stringify({
-              host_name:    msg.nickname,
-              client_id:    clientId,
-              video_id:     msg.videoId || '',
-              platform:     msg.platform || '',
-              title:        msg.title || '',
-              current_time: msg.currentTime || 0,
-              paused:       msg.paused !== false,
-              is_live:      msg.isLive || false,
-            }),
-          });
-          if (!res.ok) {
-            const e = await res.json().catch(() => ({}));
-            sendResponse({ ok: false, error: e.error || 'Create failed' });
-            return;
-          }
-          const data = await res.json();
-
-          const oldTabId = activeTabId;
-          const newTabId = sender.tab?.id || null;
-          if (oldTabId && oldTabId !== newTabId) {
-            chrome.tabs.sendMessage(oldTabId, { type: 'self_left_room' }).catch(() => {});
-          }
-
-          if (ws && ws.readyState === WebSocket.OPEN) {
-            ws.send(JSON.stringify({
-              type:      'host_transferred',
-              new_token: data.token,
-              video_id:  msg.videoId || '',
-              platform:  msg.platform || '',
-              title:     msg.title || '',
-            }));
-          }
-
-          await new Promise(r => setTimeout(r, 200));
-          if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null; }
-          reconnectAttempts = MAX_RECONNECT;
-          if (ws) {
-            ws.onclose = null;
-            try { ws.send(JSON.stringify({ type: 'leave' })); } catch (_) {}
-            ws.close(4000, 'user left');
-            ws = null;
-          }
-          mySid = null;
-
-          activeTabId = newTabId;
-          currentRoom = {
-            roomId:             data.room_id,
-            token:              data.token,
-            isHost:             true,
-            hostName:           null,
-            videoId:            msg.videoId || null,
-            platform:           msg.platform || null,
-            vetoEnabled:        false,
-            vetoSeconds:        5,
-            guestControlAllowed: false,
-            members:            [],
-            hostSearching:      false,
-            _wasReconnecting:   false,
-          };
-          reconnectAttempts = 0;
-          connectWS(data.room_id, msg.nickname);
-
-          sendResponse({ ok: true, token: data.token, roomId: data.room_id });
-        } catch (e) {
-          sendResponse({ ok: false, error: e.message || 'Network error' });
-        }
-      })();
-      return true;
+    case 'take_active_tab': {
+      if (!currentRoom?.isHost) { sendResponse({ ok: false, error: 'not_host' }); break; }
+      const newTabId = sender.tab?.id || null;
+      const oldTabId = activeTabId;
+      if (oldTabId && oldTabId !== newTabId) {
+        chrome.tabs.sendMessage(oldTabId, { type: 'self_left_room' }).catch(() => {});
+      }
+      activeTabId = newTabId;
+      sendResponse({ ok: true });
+      break;
+    }
 
     case 'sync_all':
       wsSend({ type: 'sync_all' });
