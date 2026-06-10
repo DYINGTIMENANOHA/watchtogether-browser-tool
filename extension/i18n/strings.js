@@ -82,6 +82,9 @@ const WT_STRINGS = {
     guest_control_hint: "When on, guests' actions sync to everyone",
     host_name_prefix: 'Host:',
     catch_up_btn: 'Catch Up',
+    join_host_btn: 'Join Host',
+    host_searching_label: 'Searching...',
+    not_same_video: 'Not on same video',
     leave_btn: 'Leave Room',
 
     bubble_sync: 'Sync',
@@ -157,6 +160,7 @@ const WT_STRINGS = {
     about_github_val: 'GitHub repository',
     about_license: 'License',
 
+    info_sync_all: 'Host is syncing everyone to their position...',
     sync_all_btn: 'Sync All',
     transfer_already_host: "You're hosting from another tab.",
     transfer_btn: 'Move Control Here',
@@ -252,6 +256,9 @@ const WT_STRINGS = {
     guest_control_hint: '开启后，房客操作也会同步给所有人',
     host_name_prefix: '房主：',
     catch_up_btn: '追上房主',
+    join_host_btn: '加入房主',
+    host_searching_label: '搜索中...',
+    not_same_video: '与房主不在同一视频',
     leave_btn: '离开房间',
 
     bubble_sync: '同步',
@@ -327,6 +334,7 @@ const WT_STRINGS = {
     about_github_val: 'GitHub 仓库',
     about_license: '许可证',
 
+    info_sync_all: '房主正在同步所有人...',
     sync_all_btn: '同步所有人',
     transfer_already_host: '你正在另一个标签页主持房间。',
     transfer_btn: '将控制权移到这里',
@@ -422,6 +430,9 @@ const WT_STRINGS = {
     guest_control_hint: 'オンにすると、ゲストの操作も全員に同期されます',
     host_name_prefix: 'ホスト：',
     catch_up_btn: '追いつく',
+    join_host_btn: 'ホストに参加',
+    host_searching_label: '検索中...',
+    not_same_video: 'ホストと動画が異なります',
     leave_btn: '退室する',
 
     bubble_sync: '同期',
@@ -497,6 +508,7 @@ const WT_STRINGS = {
     about_github_val: 'GitHub リポジトリ',
     about_license: 'ライセンス',
 
+    info_sync_all: 'ホストが全員を同期しています...',
     sync_all_btn: '全員に同期',
     transfer_already_host: '別のタブでルームをホストしています。',
     transfer_btn: 'コントロールをここに移動',

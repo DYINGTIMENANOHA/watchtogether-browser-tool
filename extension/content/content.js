@@ -602,6 +602,34 @@ function renderHostPanel() {
 }
 
 function renderGuestPanel() {
+  const onSameVideo = isCurrentRoomVideo();
+
+  const memberItemsHtml = !currentMembers || currentMembers.length === 0
+    ? `<div style="color:#666;font-size:12px;">${t('member_empty')}</div>`
+    : currentMembers.map(m => {
+        let hostLine = '';
+        if (m.is_host) {
+          if (hostSearching) {
+            hostLine = `<div style="font-size:10px;color:#888;margin-top:1px;">${t('host_searching_label')}</div>`;
+          } else if (currentVideoId) {
+            const platLabel = currentPlatform === 'youtube' ? 'YouTube' : 'Bilibili';
+            hostLine = onSameVideo
+              ? `<div style="font-size:10px;color:#4caf50;margin-top:1px;">${platLabel}</div>`
+              : `<div style="font-size:10px;color:#f66;margin-top:1px;">${platLabel} · ${t('not_same_video')}</div>`;
+          }
+        }
+        return `
+          <div class="wt-member-item">
+            <div class="wt-member-dot ${m.is_host ? 'host' : ''}"></div>
+            <div style="line-height:1.4;">
+              <div>${escHtml(m.name)}${m.is_host ? ' H' : ''}</div>
+              ${hostLine}
+            </div>
+          </div>`;
+      }).join('');
+
+  const catchUpDisabled = hostSearching || !onSameVideo;
+
   panel.innerHTML = `
     <div class="wt-panel-title">
       ${t('panel_guest_title')}
@@ -614,16 +642,18 @@ function renderGuestPanel() {
     <div class="wt-section-label">${t('panel_host_label')} ${escHtml(currentHostName || '-')}</div>
     <div class="wt-members" style="margin-top:8px;">
       <div class="wt-member-header">${t('panel_members_header', { n: currentMembers.length })}</div>
-      <div id="wt-member-list">
-        ${renderMemberItems(currentMembers)}
-      </div>
+      <div id="wt-member-list">${memberItemsHtml}</div>
     </div>
-    <button class="wt-btn blue" id="wt-catchup-btn">${t('catch_up_btn')}</button>
+    <button class="wt-btn blue" id="wt-catchup-btn"${catchUpDisabled ? ' disabled style="opacity:0.45;cursor:not-allowed;"' : ''}>${t('catch_up_btn')}</button>
+    ${(!hostSearching && !onSameVideo) ? `<button class="wt-btn primary" id="wt-joinhost-btn">${t('join_host_btn')}</button>` : ''}
     <button class="wt-btn danger" id="wt-leave-btn">${t('leave_room')}</button>
   `;
 
   panel.querySelector('#wt-pc-close')?.addEventListener('click', () => { panelVisible = false; panel.style.display = 'none'; });
   panel.querySelector('#wt-catchup-btn')?.addEventListener('click', () => {
+    chrome.runtime.sendMessage({ type: 'catch_up' });
+  });
+  panel.querySelector('#wt-joinhost-btn')?.addEventListener('click', () => {
     chrome.runtime.sendMessage({ type: 'catch_up' });
   });
   panel.querySelector('#wt-leave-btn')?.addEventListener('click', () => {
@@ -1059,15 +1089,26 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       currentVideoId = msg.videoId || '';
       currentPlatform = msg.platform || '';
       if (msg.syncAll) {
-        location.href = getVideoUrl(msg.videoId, msg.platform);
+        showInfo(t('info_sync_all'), 1000);
+        if (adapter && adapter.getPlatform() === msg.platform && adapter.getVideoId() === msg.videoId) {
+          suppressEvents = true;
+          if (adapter.seekTo(msg.seekTime) !== false) {
+            if (!msg.paused) adapter.play(); else adapter.pause();
+          }
+          setTimeout(() => { suppressEvents = false; }, 800);
+        } else {
+          location.href = getVideoUrl(msg.videoId, msg.platform);
+        }
       } else {
         showSwitchBanner(msg.hostName, msg.videoId, msg.platform);
+        updatePanelIfVisible();
       }
       break;
 
     case 'host_searching':
       hostSearching = true;
       updateBubble();
+      updatePanelIfVisible();
       break;
 
     case 'host_reconnecting':

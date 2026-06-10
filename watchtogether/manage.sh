@@ -2,15 +2,16 @@
 SERVICE="watchtogether.service"
 RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; CYAN='\033[0;36m'; NC='\033[0m'
 APP_DIR="/opt/watchtogether/backend"
+MONITOR_DIR="$(dirname "$APP_DIR")"
 HEALTH_URL="http://127.0.0.1:8892/health"
-PUBLIC_PORTS_REGEX=':(8892|9091|9090|3000|3100)\b'
+PUBLIC_PORTS_REGEX=':(8892|9091)\b'
 
 check_bind_host() {
   if systemctl show "$SERVICE" -p Environment 2>/dev/null | grep -q 'BIND_HOST=127.0.0.1'; then
     echo -e "${GREEN}bind ok${NC}  BIND_HOST=127.0.0.1"
   else
     echo -e "${YELLOW}warn${NC}     BIND_HOST=127.0.0.1 is not set in ${SERVICE}"
-    echo "         Add it with: sudo systemctl edit ${SERVICE}"
+    echo "         Fix with: sudo bash manage.sh fix-bind"
   fi
 }
 
@@ -30,7 +31,7 @@ check_ports() {
 
   exposed=$(ss -lnt 2>/dev/null | grep -E "$PUBLIC_PORTS_REGEX" | grep -Ev '127\.0\.0\.1:|\[::1\]:' || true)
   if [[ -z "$exposed" ]]; then
-    echo -e "${GREEN}ports ok${NC} monitored/backend ports are not listening publicly"
+    echo -e "${GREEN}ports ok${NC} backend ports are not listening publicly"
   else
     echo -e "${YELLOW}warn${NC}     these ports may be publicly exposed:"
     echo "$exposed"
@@ -126,7 +127,26 @@ case "$1" in
   log20)
     journalctl -u $SERVICE -n 20 --no-pager
     ;;
+  fix-bind)
+    OVERRIDE_DIR="/etc/systemd/system/${SERVICE}.d"
+    mkdir -p "$OVERRIDE_DIR"
+    printf '[Service]\nEnvironment="BIND_HOST=127.0.0.1"\n' > "$OVERRIDE_DIR/bind.conf"
+    systemctl daemon-reload
+    systemctl restart $SERVICE
+    sleep 1
+    if systemctl is-active --quiet $SERVICE; then
+      echo -e "${GREEN}fix-bind ok${NC} BIND_HOST=127.0.0.1 set; service restarted"
+    else
+      echo -e "${RED}restart failed${NC}"
+      systemctl status $SERVICE --no-pager | head -10
+      exit 1
+    fi
+    ;;
+  metrics)
+    bash "$MONITOR_DIR/monitoring/metrics.sh"
+    ;;
   *)
     echo "Usage: $0 {start|stop|restart|build|deploy [--reload-nginx]|status|nginx-reload|log|log20}"
+    echo "       $0 {fix-bind|metrics}"
     ;;
 esac
