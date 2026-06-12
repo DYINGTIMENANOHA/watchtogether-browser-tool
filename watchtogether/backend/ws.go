@@ -346,6 +346,43 @@ func handleWS(cfg Config) http.HandlerFunc {
 					}
 				}
 
+			case "transfer_host":
+				if sid != room.HostSID {
+					break
+				}
+				target, exists := room.Members[msg.TargetSID]
+				if !exists {
+					_ = member.Send(map[string]any{"type": "error", "message": "transfer_target_offline"})
+					break
+				}
+				room.HostSID = msg.TargetSID
+				room.HostClientID = target.ClientID
+				room.HostName = target.Name
+				room.HostSearching = false
+				for s, m := range room.Members {
+					switch s {
+					case sid:
+						_ = m.Send(map[string]any{"type": "you_are_guest", "new_host_name": target.Name})
+					case msg.TargetSID:
+						_ = m.Send(map[string]any{
+							"type":          "host_changed",
+							"new_host_sid":  msg.TargetSID,
+							"new_host_name": target.Name,
+							"old_host_name": hello.Name,
+							"is_new_host":   true,
+						})
+					default:
+						_ = m.Send(map[string]any{
+							"type":          "host_changed",
+							"new_host_sid":  msg.TargetSID,
+							"new_host_name": target.Name,
+							"old_host_name": hello.Name,
+						})
+					}
+				}
+				broadcastMemberList(room)
+				log.Info().Str("room_id", room.RoomID).Str("from", hello.Name).Str("to", target.Name).Msg("host transferred")
+
 			case "leave":
 				deliberateLeave = true
 				room.Unlock()

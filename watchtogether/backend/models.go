@@ -79,9 +79,10 @@ type WSMessage struct {
 	Name     string  `json:"name,omitempty"`
 	ClientID string  `json:"client_id,omitempty"`
 	RoomID   string  `json:"room_id,omitempty"`
-	Allowed  bool    `json:"allowed,omitempty"`
-	NewToken string  `json:"new_token,omitempty"`
-	MsgTitle string  `json:"title,omitempty"`
+	Allowed   bool   `json:"allowed,omitempty"`
+	NewToken  string `json:"new_token,omitempty"`
+	MsgTitle  string `json:"title,omitempty"`
+	TargetSID string `json:"target_sid,omitempty"`
 }
 
 type CreateRoomRequest struct {

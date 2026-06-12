@@ -505,7 +505,7 @@ function renderHostPanel() {
 
     <div class="wt-members">
       <div class="wt-member-header">${t('panel_members_header', { n: memberCount })}</div>
-      <div id="wt-member-list">${renderMemberItems(currentMembers)}</div>
+      <div id="wt-member-list">${renderMemberItems(currentMembers, true)}</div>
     </div>
 
     <div class="wt-section">
@@ -593,6 +593,27 @@ function renderHostPanel() {
     });
   });
 
+  panel.querySelector('#wt-member-list')?.addEventListener('click', e => {
+    const btn = e.target.closest('.wt-xfer-btn');
+    if (!btn || btn.disabled) return;
+    const targetSid = btn.dataset.sid;
+    btn.disabled = true;
+    btn.textContent = t('transfer_host_btn_loading');
+    chrome.runtime.sendMessage({ type: 'transfer_host', targetSid }, res => {
+      if (!res?.ok) {
+        btn.disabled = false;
+        btn.textContent = t('transfer_host_btn');
+        const errKey = res?.error === 'transfer_target_offline' ? 'err_transfer_offline' : 'err_create_failed';
+        showInfo(t(errKey), 4000);
+      } else {
+        isHost = false;
+        panelVisible = false; panel.style.display = 'none';
+        updateBubble();
+        showTransferChoiceBanner(res.newHostName);
+      }
+    });
+  });
+
   panel.querySelector('#wt-leave-btn')?.addEventListener('click', () => {
     chrome.runtime.sendMessage({ type: 'leave_room' });
     isInRoom = false; isHost = false; currentMembers = [];
@@ -664,12 +685,13 @@ function renderGuestPanel() {
   });
 }
 
-function renderMemberItems(members) {
+function renderMemberItems(members, showTransfer = false) {
   if (!members || members.length === 0) return `<div style="color:#666;font-size:12px;">${t('member_empty')}</div>`;
   return members.map(m => `
     <div class="wt-member-item">
       <div class="wt-member-dot ${m.is_host ? 'host' : ''}"></div>
-      <span>${escHtml(m.name)}${m.is_host ? ' H' : ''}</span>
+      <span style="flex:1;">${escHtml(m.name)}${m.is_host ? ' H' : ''}</span>
+      ${showTransfer && !m.is_host ? `<button class="wt-copy-btn wt-xfer-btn" data-sid="${escHtml(m.sid)}" style="color:#ff9800;border-color:#ff9800;font-size:10px;padding:2px 6px;">${t('transfer_host_btn')}</button>` : ''}
     </div>
   `).join('');
 }
@@ -804,6 +826,27 @@ function showSwitchBanner(hostName, videoId, platform) {
     updateBubble();
     showInfo(t('info_left_room'), 3000);
   });
+}
+
+function showTransferChoiceBanner(newHostName) {
+  const b = getBanners();
+  if (!b) return;
+  const el = document.createElement('div');
+  el.className = 'wt-banner info';
+  el.innerHTML = `
+    <span class="wt-banner-text">${t('you_are_guest_text', { name: escHtml(newHostName || '?') })}</span>
+    <button class="wt-bBtn ok" id="wt-stay-btn">${t('transfer_stay_btn')}</button>
+    <button class="wt-bBtn danger" id="wt-tleave-btn">${t('leave_room')}</button>
+  `;
+  b.appendChild(el);
+  el.querySelector('#wt-stay-btn')?.addEventListener('click', () => el.remove());
+  el.querySelector('#wt-tleave-btn')?.addEventListener('click', () => {
+    el.remove();
+    chrome.runtime.sendMessage({ type: 'leave_room' });
+    isInRoom = false; isHost = false; currentMembers = [];
+    updateBubble(); panelVisible = false; if (panel) panel.style.display = 'none';
+  });
+  setTimeout(() => el.remove(), 15000);
 }
 
 function showLostBanner(hostName) {
@@ -1160,6 +1203,34 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         updateBubble();
       }
       break;
+
+    case 'host_changed': {
+      if (msg.iAmNewHost) {
+        isHost = true;
+        updateBubble();
+        updatePanelIfVisible();
+        showInfo(t('info_became_host'), 4000);
+        const newVid = adapter?.getVideoId() || '';
+        const newPlat = adapter?.getPlatform() || '';
+        if (newVid) {
+          currentVideoId = newVid;
+          currentPlatform = newPlat;
+          chrome.runtime.sendMessage({
+            type: 'video_changed',
+            videoId: newVid,
+            platform: newPlat,
+            isLive: adapter?.isLive() || false,
+            currentTime: adapter?.getCurrentTime() || 0,
+            paused: adapter?.isPaused() !== false,
+          });
+        }
+      } else {
+        currentHostName = msg.newHostName;
+        showInfo(t('host_changed_banner', { name: escHtml(msg.newHostName) }), 4000);
+        updatePanelIfVisible();
+      }
+      break;
+    }
 
     case 'member_list':
       currentMembers = msg.members || [];

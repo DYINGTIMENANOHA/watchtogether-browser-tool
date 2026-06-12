@@ -177,6 +177,15 @@ const WT_STRINGS = {
     history_ago_min: '{n}m ago',
     history_ago_hour: '{n}h ago',
     history_ago_day: '{n}d ago',
+
+    transfer_host_btn: 'Transfer',
+    transfer_host_btn_loading: 'Transferring...',
+    err_transfer_offline: 'Member went offline, please pick another',
+    info_transfer_done: 'Host transferred. You have left the room.',
+    info_became_host: 'You are now the host.',
+    host_changed_banner: '{name} is now the host',
+    you_are_guest_text: 'Transferred to {name}. Stay in room?',
+    transfer_stay_btn: 'Stay',
   },
 
   zh: {
@@ -351,6 +360,15 @@ const WT_STRINGS = {
     history_ago_min: '{n}分钟前',
     history_ago_hour: '{n}小时前',
     history_ago_day: '{n}天前',
+
+    transfer_host_btn: '移交',
+    transfer_host_btn_loading: '移交中...',
+    err_transfer_offline: '该成员已离线，请重新选择',
+    info_transfer_done: '房主已移交，你已离开房间。',
+    info_became_host: '你现在是房主了。',
+    host_changed_banner: '{name} 已成为房主',
+    you_are_guest_text: '已移交给 {name}，是否留在房间？',
+    transfer_stay_btn: '留在房间',
   },
 
   ja: {
@@ -525,6 +543,15 @@ const WT_STRINGS = {
     history_ago_min: '{n}分前',
     history_ago_hour: '{n}時間前',
     history_ago_day: '{n}日前',
+
+    transfer_host_btn: '移譲',
+    transfer_host_btn_loading: '移譲中...',
+    err_transfer_offline: 'メンバーがオフラインです。再選択してください。',
+    info_transfer_done: 'ホストを移譲し、退室しました。',
+    info_became_host: 'あなたがホストになりました。',
+    host_changed_banner: '{name} がホストになりました',
+    you_are_guest_text: '{name} にホストを移譲しました。ルームに留まりますか？',
+    transfer_stay_btn: 'ルームに残る',
   },
 };
 

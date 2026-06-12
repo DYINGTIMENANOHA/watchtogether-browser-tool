@@ -10,6 +10,7 @@ let currentRoom = null;
 let mySid = null;
 let activeTabId = null;
 let _cachedClientId = null;
+let _pendingTransferCallback = null;
 
 chrome.runtime.onInstalled.addListener(async (details) => {
   if (details.reason === 'install') {
@@ -157,6 +158,13 @@ async function connectWS(roomId, name) {
   ws.onclose = (e) => {
     console.log('[WT] WS closed, code:', e.code, 'attempts:', reconnectAttempts);
     wsState = 'disconnected';
+
+    if (_pendingTransferCallback) {
+      const cb = _pendingTransferCallback;
+      _pendingTransferCallback = null;
+      cb({ ok: false, error: 'connection_lost' });
+    }
+
     _broadcastStatus('disconnected');
 
     if (e.code === 4000) {
@@ -315,6 +323,45 @@ function handleServerMessage(msg) {
       currentRoom = null; mySid = null; activeTabId = null;
       break;
 
+    case 'you_are_guest':
+      if (currentRoom) currentRoom.isHost = false;
+      if (_pendingTransferCallback) {
+        const cb = _pendingTransferCallback;
+        _pendingTransferCallback = null;
+        cb({ ok: true, newHostName: msg.new_host_name });
+      }
+      break;
+
+    case 'error':
+      if (_pendingTransferCallback) {
+        const cb = _pendingTransferCallback;
+        _pendingTransferCallback = null;
+        cb({ ok: false, error: msg.message });
+      }
+      break;
+
+    case 'host_changed': {
+      const iAmNewHost = mySid === msg.new_host_sid;
+      if (currentRoom) {
+        currentRoom.hostName = msg.new_host_name;
+        if (iAmNewHost) currentRoom.isHost = true;
+        if (currentRoom.members) {
+          currentRoom.members = currentRoom.members.map(m => ({
+            ...m,
+            is_host: m.sid === msg.new_host_sid,
+          }));
+        }
+      }
+      sendToActiveTab({
+        type: 'host_changed',
+        newHostSid: msg.new_host_sid,
+        newHostName: msg.new_host_name,
+        oldHostName: msg.old_host_name,
+        iAmNewHost,
+      });
+      break;
+    }
+
     case 'member_joined':
       if (currentRoom?.members) {
         if (!currentRoom.members.find(m => m.sid === msg.sid)) {
@@ -344,7 +391,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       activeTabId = msg.tabId || sender.tab?.id || null;
       currentRoom = {
         roomId: msg.roomId,
-        token: msg.token || null,
+        token: msg.token || msg.joinToken || null,
         isHost: msg.isHost,
         hostName: msg.hostName || null,
         videoId: msg.videoId || null,
@@ -511,6 +558,14 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     case 'sync_all':
       wsSend({ type: 'sync_all' });
       break;
+
+    case 'transfer_host': {
+      if (!currentRoom?.isHost) { sendResponse({ ok: false, error: 'not_host' }); break; }
+      const sent = wsSend({ type: 'transfer_host', target_sid: msg.targetSid });
+      if (!sent) { sendResponse({ ok: false, error: 'not_connected' }); break; }
+      _pendingTransferCallback = sendResponse;
+      return true;
+    }
 
     case 'api_check_room':
       (async () => {
