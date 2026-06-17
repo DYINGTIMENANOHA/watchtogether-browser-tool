@@ -6,22 +6,35 @@ Self-hostable relay server for the WatchTogether browser extension.
 
 The default deployment is public: anyone using the extension can connect through your HTTPS domain. Private access controls are optional and intended for personal or closed-group servers.
 
-### 1. Upload or clone the repository
+### 1. One-command install
 
 ```bash
-cd /opt
-git clone <your-repo-url> watchtogether
-cd watchtogether
+curl -fsSL https://raw.githubusercontent.com/DYINGTIMENANOHA/watchtogether-browser-tool/main/watchtogether/install.sh \
+  | sudo bash -s -- --domain watch.example.com --email admin@example.com
 ```
 
-### 2. Configure environment variables
+The installer installs dependencies, builds the Go backend, writes the systemd service, configures Nginx, requests a Let's Encrypt certificate, and runs health checks.
 
-Create a `.env` file when using Docker Compose:
+For separate regional relays, run the same command on each VPS with its own DNS name:
 
 ```bash
-CLIENT_TOKEN=
-ALLOWED_ORIGINS=
-GRAFANA_PASSWORD=change-me
+# Hong Kong / overseas
+sudo bash watchtogether/install.sh --domain hk.example.com --email admin@example.com
+
+# Shanghai / mainland China
+sudo bash watchtogether/install.sh --domain cn.example.com --email admin@example.com
+```
+
+### 2. Optional private-server environment
+
+The normal public relay leaves these values empty. If you intentionally want a private deployment, pass them to `install.sh`:
+
+```bash
+sudo bash watchtogether/install.sh \
+  --domain watch.example.com \
+  --email admin@example.com \
+  --client-token shared-secret \
+  --allowed-origins chrome-extension://your-extension-id
 ```
 
 Leave `CLIENT_TOKEN` and `ALLOWED_ORIGINS` empty for the normal public server mode. This keeps the server usable exactly like the packaged public relay: users only need the server URL.
@@ -36,15 +49,7 @@ ALLOWED_ORIGINS=chrome-extension://your-extension-id
 
 Leave both empty unless you intentionally want a private deployment.
 
-### 3. Start services
-
-Docker Compose deployment:
-
-```bash
-docker compose up -d --build
-```
-
-Local health check:
+### 3. Health checks
 
 ```bash
 curl http://127.0.0.1:8892/health
@@ -90,9 +95,9 @@ sudo systemctl daemon-reload
 sudo ./manage.sh restart
 ```
 
-### 4. Configure Nginx
+### 4. Manual Nginx
 
-Copy `nginx_snippet.conf` into your existing HTTPS server block. The extension expects the `/wt/...` prefix when using the packaged defaults.
+The installer writes Nginx automatically. If you maintain your own Nginx server block, copy `nginx_snippet.conf` into it. The extension expects the `/wt/...` prefix when using packaged defaults.
 
 ```bash
 nginx -t

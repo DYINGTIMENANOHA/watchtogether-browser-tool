@@ -1,5 +1,9 @@
 ﻿// background.js - Service Worker
-const DEFAULT_SERVER = 'https://streamforsoul.com:8443';
+const WT_SERVERS = {
+  overseas: 'https://streamforsoul.com:8443',
+  mainland: 'https://cn.streamforsoul.com',
+};
+const DEFAULT_SERVER_REGION = 'overseas';
 
 let ws = null;
 let wsState = 'disconnected'; // disconnected | connecting | connected | reconnecting
@@ -66,11 +70,52 @@ async function getClientId() {
   });
 }
 
-async function getSettings() {
+function normalizeServerRegion(region) {
+  return WT_SERVERS[region] ? region : DEFAULT_SERVER_REGION;
+}
+
+function resolveServerUrl(settings, overrideRegion = '') {
+  const rawUrl = (settings.serverUrl || '').trim().replace(/\/+$/, '');
+  const storedRegion = settings.serverRegion || (rawUrl ? 'custom' : DEFAULT_SERVER_REGION);
+  if (overrideRegion && WT_SERVERS[overrideRegion]) return WT_SERVERS[overrideRegion];
+  if (storedRegion === 'custom' && rawUrl) return rawUrl;
+  return WT_SERVERS[normalizeServerRegion(storedRegion)];
+}
+
+function getOriginPattern(url) {
+  try {
+    const u = new URL(url);
+    if (u.protocol !== 'https:' && u.protocol !== 'http:') return '';
+    return `${u.origin}/*`;
+  } catch (_) {
+    return '';
+  }
+}
+
+async function hasServerPermission(settings) {
+  if (settings.serverRegion !== 'custom') return true;
+  const origin = getOriginPattern(settings.serverUrl);
+  if (!origin) return false;
+  return new Promise((resolve) => {
+    chrome.permissions.contains({ origins: [origin] }, resolve);
+  });
+}
+
+async function requireServerPermission(settings) {
+  if (await hasServerPermission(settings)) return;
+  throw new Error('Permission required for custom server. Open Settings and authorize this server URL.');
+}
+
+async function getSettings(overrideRegion = '') {
   return new Promise(resolve => {
-    chrome.storage.local.get({ serverUrl: '', nickname: '', serverToken: '' }, s => {
-      // Empty serverUrl means "use the built-in default server".
-      if (!s.serverUrl) s.serverUrl = DEFAULT_SERVER;
+    chrome.storage.local.get({ serverRegion: '', serverUrl: '', nickname: '', serverToken: '' }, s => {
+      const rawServerUrl = (s.serverUrl || '').trim().replace(/\/+$/, '');
+      const effectiveRegion = overrideRegion && WT_SERVERS[overrideRegion]
+        ? overrideRegion
+        : (s.serverRegion || (rawServerUrl ? 'custom' : DEFAULT_SERVER_REGION));
+      s.serverRegion = WT_SERVERS[effectiveRegion] ? effectiveRegion : (effectiveRegion === 'custom' ? 'custom' : DEFAULT_SERVER_REGION);
+      s.rawServerUrl = rawServerUrl;
+      s.serverUrl = resolveServerUrl(s, overrideRegion);
       resolve(s);
     });
   });
@@ -109,7 +154,15 @@ async function connectWS(roomId, name) {
   wsState = 'connecting';
   _broadcastStatus('connecting');
 
-  const [s, clientId] = await Promise.all([getSettings(), getClientId()]);
+  const [s, clientId] = await Promise.all([getSettings(currentRoom?.serverRegion || ''), getClientId()]);
+  try {
+    await requireServerPermission(s);
+  } catch (e) {
+    console.error('[WT] server permission error:', e);
+    wsState = 'disconnected';
+    _broadcastStatus('disconnected');
+    return;
+  }
   const wsUrl = s.serverUrl.replace('https://', 'wss://').replace('http://', 'ws://');
   const wsParams = new URLSearchParams({ room_id: roomId });
   if (s.serverToken) wsParams.set('client_token', s.serverToken);
@@ -401,6 +454,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         guestControlAllowed: false,
         members: [],
         hostSearching: msg.hostSearching || false,
+        serverRegion: msg.serverRegion || null,
         _wasReconnecting: false,
       };
       if (!msg.isHost && msg.joinToken) {
@@ -410,6 +464,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           platform: msg.platform || '',
           videoId: msg.videoId || '',
           title: msg.title || '',
+          serverRegion: msg.serverRegion || '',
         });
       }
       reconnectAttempts = 0;
@@ -493,7 +548,8 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     case 'api_create_room':
       (async () => {
         try {
-          const [s, clientId] = await Promise.all([getSettings(), getClientId()]);
+          const [s, clientId] = await Promise.all([getSettings(msg.serverRegion || ''), getClientId()]);
+          await requireServerPermission(s);
           const res = await fetch(`${s.serverUrl}/wt/room/create`, {
             method: 'POST',
             headers: authHeaders(s, true),
@@ -514,6 +570,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
             return;
           }
           const data = await res.json();
+          data.serverRegion = s.serverRegion;
           sendResponse({ ok: true, data });
         } catch (e) {
           sendResponse({ ok: false, error: e.message || 'Network error' });
@@ -524,7 +581,8 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     case 'api_join_room':
       (async () => {
         try {
-          const s = await getSettings();
+          const s = await getSettings(msg.serverRegion || '');
+          await requireServerPermission(s);
           const res = await fetch(`${s.serverUrl}/wt/room/join`, {
             method: 'POST',
             headers: authHeaders(s, true),
@@ -536,6 +594,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
             return;
           }
           const data = await res.json();
+          data.serverRegion = s.serverRegion;
           sendResponse({ ok: true, data });
         } catch (e) {
           sendResponse({ ok: false, error: e.message || 'Network error' });
@@ -570,7 +629,8 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     case 'api_check_room':
       (async () => {
         try {
-          const s = await getSettings();
+          const s = await getSettings(msg.serverRegion || '');
+          await requireServerPermission(s);
           const res = await fetch(
             `${s.serverUrl}/wt/room/check?token=${encodeURIComponent(msg.token)}`,
             { headers: authHeaders(s), signal: AbortSignal.timeout(5000) }
@@ -592,8 +652,16 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       return true;
 
     case 'get_effective_server_url':
-      getSettings().then(s => sendResponse({ url: s.serverUrl }));
+      getSettings(msg.serverRegion || '').then(s => sendResponse({ url: s.serverUrl, region: s.serverRegion }));
       return true;
+
+    case 'set_server_region':
+      if (msg.serverRegion && WT_SERVERS[msg.serverRegion]) {
+        chrome.storage.local.set({ serverRegion: msg.serverRegion }, () => sendResponse({ ok: true }));
+        return true;
+      }
+      sendResponse({ ok: false });
+      break;
   }
 });
 

@@ -1,8 +1,53 @@
+const WT_SERVERS = {
+  overseas: 'https://streamforsoul.com:8443',
+  mainland: 'https://cn.streamforsoul.com',
+};
+const DEFAULT_SERVER_REGION = 'overseas';
+
+function getStoredRegion(stored) {
+  if (stored.serverRegion) return stored.serverRegion;
+  return stored.serverUrl ? 'custom' : DEFAULT_SERVER_REGION;
+}
+
+function getEffectiveServerUrl(region, customUrl) {
+  const rawUrl = (customUrl || '').trim().replace(/\/+$/, '');
+  if (region === 'custom') return rawUrl;
+  return WT_SERVERS[region] || WT_SERVERS[DEFAULT_SERVER_REGION];
+}
+
+function getOriginPattern(url) {
+  try {
+    const u = new URL(url);
+    if (u.protocol !== 'https:' && u.protocol !== 'http:') return '';
+    return `${u.origin}/*`;
+  } catch (_) {
+    return '';
+  }
+}
+
+async function ensureCustomServerPermission(region, url) {
+  if (region !== 'custom') return true;
+  const origin = getOriginPattern(url);
+  if (!origin) throw new Error(t('server_permission_invalid_url'));
+  const granted = await new Promise((resolve) => {
+    chrome.permissions.request({ origins: [origin] }, resolve);
+  });
+  if (!granted) throw new Error(t('server_permission_denied'));
+  return true;
+}
+
+function updateServerUrlVisibility() {
+  const region = document.getElementById('server-region').value;
+  const field = document.getElementById('server-url-field');
+  if (field) field.style.display = region === 'custom' ? '' : 'none';
+}
+
 async function initSettings() {
   const stored = await new Promise(r =>
     chrome.storage.local.get({
       lang: 'en',
       nickname: '',
+      serverRegion: '',
       serverUrl: '',
       serverToken: '',
       showBubble: true,
@@ -13,12 +58,15 @@ async function initSettings() {
   setLang(stored.lang);
   applyI18n();
 
+  const serverRegion = getStoredRegion(stored);
   document.getElementById('nickname').value = stored.nickname;
+  document.getElementById('server-region').value = serverRegion;
   document.getElementById('server-url').value = stored.serverUrl;
   document.getElementById('server-token').value = stored.serverToken || '';
   document.getElementById('toggle-bubble').checked = stored.showBubble !== false;
   document.getElementById('lang-select').value = stored.lang || 'en';
   document.getElementById('client-id-display').textContent = stored.clientId || t('client_id_missing');
+  updateServerUrlVisibility();
 }
 
 function autoNicknameLang(name) {
@@ -29,19 +77,29 @@ function autoNicknameLang(name) {
   return '';
 }
 
-document.getElementById('btn-save').addEventListener('click', () => {
+document.getElementById('btn-save').addEventListener('click', async () => {
   const lang = document.getElementById('lang-select').value;
   const nickname = document.getElementById('nickname').value.trim();
+  const serverRegion = document.getElementById('server-region').value;
   const serverUrl = document.getElementById('server-url').value.trim();
   const serverToken = document.getElementById('server-token').value.trim();
   const showBubble = document.getElementById('toggle-bubble').checked;
   const nicknameLang = autoNicknameLang(nickname);
   const nicknameAuto = !nickname || !!nicknameLang;
+  const msg = document.getElementById('saved-msg');
 
-  chrome.storage.local.set({ lang, nickname, nicknameAuto, nicknameLang: nickname ? nicknameLang : lang, serverUrl, serverToken, showBubble }, () => {
+  try {
+    await ensureCustomServerPermission(serverRegion, serverUrl);
+  } catch (e) {
+    msg.style.color = '#c00';
+    msg.textContent = e.message || t('server_permission_denied');
+    return;
+  }
+
+  chrome.storage.local.set({ lang, nickname, nicknameAuto, nicknameLang: nickname ? nicknameLang : lang, serverRegion, serverUrl, serverToken, showBubble }, () => {
     setLang(lang);
     applyI18n();
-    const msg = document.getElementById('saved-msg');
+    msg.style.color = '#4caf50';
     msg.textContent = t('saved_ok');
     setTimeout(() => { msg.textContent = ''; }, 2000);
   });
@@ -52,6 +110,7 @@ document.getElementById('btn-reset').addEventListener('click', () => {
   chrome.storage.local.set({
     lang: 'en',
     nickname: '',
+    serverRegion: DEFAULT_SERVER_REGION,
     serverUrl: '',
     serverToken: '',
     showBubble: true,
@@ -65,6 +124,8 @@ document.getElementById('lang-select').addEventListener('change', () => {
   applyI18n();
 });
 
+document.getElementById('server-region').addEventListener('change', updateServerUrlVisibility);
+
 document.getElementById('btn-selfhost-help').addEventListener('click', () => {
   const box = document.getElementById('selfhost-help-box');
   box.style.display = box.style.display === 'none' ? '' : 'none';
@@ -73,18 +134,22 @@ document.getElementById('btn-selfhost-help').addEventListener('click', () => {
 document.getElementById('btn-test').addEventListener('click', async () => {
   const btn = document.getElementById('btn-test');
   const hint = document.getElementById('server-test-result');
+  const serverRegion = document.getElementById('server-region').value;
   const inputUrl = document.getElementById('server-url').value.trim();
   const serverToken = document.getElementById('server-token').value.trim();
 
-  let url = inputUrl;
-  if (!url) {
-    url = await new Promise(r =>
-      chrome.runtime.sendMessage({ type: 'get_effective_server_url' }, res => r(res?.url || ''))
-    );
-  }
+  let url = getEffectiveServerUrl(serverRegion, inputUrl);
   if (!url) {
     hint.style.color = '#c00';
     hint.textContent = 'No server URL configured';
+    return;
+  }
+
+  try {
+    await ensureCustomServerPermission(serverRegion, url);
+  } catch (e) {
+    hint.style.color = '#c00';
+    hint.textContent = e.message || t('server_permission_denied');
     return;
   }
 

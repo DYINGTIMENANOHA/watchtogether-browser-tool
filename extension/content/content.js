@@ -2,6 +2,11 @@
 const isYouTube = location.hostname.includes('youtube.com');
 const isBilibili = location.hostname.includes('bilibili.com');
 let adapter = isYouTube ? new YouTubeAdapter() : isBilibili ? new BilibiliAdapter() : null;
+const WT_SERVERS = {
+  overseas: 'https://streamforsoul.com:8443',
+  mainland: 'https://cn.streamforsoul.com',
+};
+const DEFAULT_SERVER_REGION = 'overseas';
 
 let isInRoom = false;
 let isHost = false;
@@ -13,6 +18,7 @@ let currentHostName = '';
 let currentToken = '';
 let currentVideoId = '';
 let currentPlatform = '';
+let currentServerRegion = '';
 
 let shadowHost = null;
 let shadowRoot = null;
@@ -235,6 +241,7 @@ function renderPanel() {
 
 function renderIdlePanel() {
   const hashCode = getHashCode();
+  const inviteRegion = getInviteRegion();
   const videoId = adapter?.getVideoId() || '';
   const platform = adapter?.getPlatform() || '';
   const hasVideo = !!videoId;
@@ -305,6 +312,7 @@ function renderIdlePanel() {
         currentToken = data.token;
         currentVideoId = videoId;
         currentPlatform = platform;
+        currentServerRegion = data.serverRegion || currentServerRegion;
         chrome.runtime.sendMessage({
           type: 'connect_room',
           roomId: data.room_id,
@@ -312,6 +320,7 @@ function renderIdlePanel() {
           isHost: true,
           videoId, platform, nickname,
           tabId: null,
+          serverRegion: currentServerRegion,
         });
         isInRoom = true; isHost = true; isActiveTab = true;
         panelVisible = false; panel.style.display = 'none';
@@ -323,20 +332,22 @@ function renderIdlePanel() {
   panel.querySelector('#wt-do-join-btn')?.addEventListener('click', () => {
     const btn = panel.querySelector('#wt-do-join-btn');
     const errEl = panel.querySelector('#wt-join-err');
-    const token = panel.querySelector('#wt-code-input')?.value.trim();
+    const parsedCode = parseInviteCode(panel.querySelector('#wt-code-input')?.value);
+    const token = parsedCode.token;
     const nickname = panel.querySelector('#wt-nick-input')?.value.trim();
     if (!token) { if (errEl) errEl.textContent = t('panel_err_code'); return; }
     if (!nickname) { if (errEl) errEl.textContent = t('panel_err_nick'); return; }
     if (errEl) errEl.textContent = '';
     btn.disabled = true; btn.textContent = t('panel_joining');
 
-    chrome.runtime.sendMessage({ type: 'api_join_room', token, nickname }, res => {
+    chrome.runtime.sendMessage({ type: 'api_join_room', token, nickname, serverRegion: parsedCode.serverRegion || inviteRegion || currentServerRegion }, res => {
       if (!res?.ok) {
         if (errEl) errEl.textContent = res?.error || t('panel_err_failed');
         btn.disabled = false; btn.textContent = t('panel_join_btn');
         return;
       }
       const info = res.data;
+      currentServerRegion = parsedCode.serverRegion || inviteRegion || info.serverRegion || currentServerRegion;
       chrome.runtime.sendMessage({
         type: 'connect_room',
         roomId: info.room_id,
@@ -349,6 +360,7 @@ function renderIdlePanel() {
         tabId: null,
         joinToken: token,
         title: info.title || '',
+        serverRegion: currentServerRegion,
       });
       if (hashCode) history.replaceState(null, '', location.pathname + location.search);
       isInRoom = true; isHost = false; isActiveTab = true;
@@ -395,14 +407,15 @@ function renderIdlePanelHistory() {
 
     entries.forEach((entry, i) => {
       panel.querySelector(`#wt-hjoin-${i}`)?.addEventListener('click', () => {
+        currentServerRegion = entry.serverRegion || currentServerRegion;
         const codeInput = panel?.querySelector('#wt-code-input');
-        if (codeInput) { codeInput.value = entry.token; }
+        if (codeInput) { codeInput.value = formatInviteCode(entry.token, entry.serverRegion); }
         panel?.querySelector('#wt-do-join-btn')?.click();
       });
     });
 
     entries.forEach((entry, i) => {
-      chrome.runtime.sendMessage({ type: 'api_check_room', token: entry.token }, res => {
+      chrome.runtime.sendMessage({ type: 'api_check_room', token: entry.token, serverRegion: entry.serverRegion || '' }, res => {
         const dot = panel?.querySelector(`#wt-hd-${i}`);
         const btn = panel?.querySelector(`#wt-hjoin-${i}`);
         if (!dot) return;
@@ -469,11 +482,7 @@ function renderHostTransferPanel() {
 
 function renderHostPanel() {
   const memberCount = currentMembers.length;
-  const inviteLink = currentVideoId && currentPlatform
-    ? (currentPlatform === 'youtube'
-        ? `https://www.youtube.com/watch?v=${currentVideoId}#wt-code=${currentToken}`
-        : `https://www.bilibili.com/video/${currentVideoId}/?wt_code=${currentToken}`)
-    : '';
+  const inviteLink = getInviteLink(currentVideoId, currentPlatform, currentToken, currentServerRegion);
 
   panel.innerHTML = `
     <div class="wt-panel-title">
@@ -488,7 +497,7 @@ function renderHostPanel() {
     <div class="wt-section">
       <div class="wt-section-label">${t('invite_code_label')}</div>
       <div class="wt-code-row">
-        <span class="wt-code-val">${currentToken || '-'}</span>
+        <span class="wt-code-val">${formatInviteCode(currentToken, currentServerRegion) || '-'}</span>
         <button class="wt-copy-btn" id="wt-copy-code">${t('copy')}</button>
       </div>
     </div>
@@ -545,7 +554,7 @@ function renderHostPanel() {
 
   panel.querySelector('#wt-copy-code')?.addEventListener('click', () => {
     const btn = panel.querySelector('#wt-copy-code');
-    copyText(currentToken, btn);
+    copyText(formatInviteCode(currentToken, currentServerRegion), btn);
     if (btn) { const orig = t('copy'); setTimeout(() => { btn.textContent = orig; }, 2000); }
   });
   if (inviteLink) {
@@ -738,6 +747,37 @@ function getVideoUrl(videoId, platform) {
     : `https://www.bilibili.com/video/${videoId}/`;
 }
 
+function getInviteLink(videoId, platform, token, region) {
+  if (!videoId || !platform || !token) return '';
+  const regionParam = WT_SERVERS[region] ? region : '';
+  return platform === 'youtube'
+    ? `https://www.youtube.com/watch?v=${videoId}#wt-code=${token}${regionParam ? `&wt-region=${regionParam}` : ''}`
+    : `https://www.bilibili.com/video/${videoId}/?wt_code=${token}${regionParam ? `&wt_region=${regionParam}` : ''}`;
+}
+
+function regionPrefix(region) {
+  if (region === 'mainland') return 'CN';
+  if (region === 'overseas') return 'HK';
+  return '';
+}
+
+function formatInviteCode(token, region) {
+  if (!token) return '';
+  const prefix = regionPrefix(region);
+  return prefix ? `${prefix}-${token}` : token;
+}
+
+function parseInviteCode(input) {
+  const value = (input || '').trim();
+  const match = value.match(/^(CN|HK)-?(.+)$/i);
+  if (!match) return { token: value, serverRegion: '' };
+  const code = match[1].toUpperCase();
+  return {
+    token: match[2].trim(),
+    serverRegion: code === 'CN' ? 'mainland' : 'overseas',
+  };
+}
+
 function isCurrentRoomVideo(videoId = currentVideoId, platform = currentPlatform) {
   if (hostSearching) return false;
   if (!adapter || !videoId || !platform) return false;
@@ -748,6 +788,12 @@ function getHashCode() {
   const hashMatch = location.hash.match(/[#&]wt-code=([^&]+)/);
   if (hashMatch) return hashMatch[1];
   return new URLSearchParams(location.search).get('wt_code') || null;
+}
+
+function getInviteRegion() {
+  const hashMatch = location.hash.match(/[#&]wt-region=([^&]+)/);
+  const value = hashMatch ? hashMatch[1] : new URLSearchParams(location.search).get('wt_region');
+  return WT_SERVERS[value] ? value : '';
 }
 
 function showInfo(text, duration = 4000) {
@@ -910,6 +956,7 @@ function syncStateFromBackground(callback) {
       currentToken = res.currentRoom.token || '';
       currentVideoId = res.currentRoom.videoId || '';
       currentPlatform = res.currentRoom.platform || '';
+      currentServerRegion = res.currentRoom.serverRegion || currentServerRegion;
     } else {
       isInRoom = false; isHost = false; isActiveTab = false;
       currentMembers = []; currentToken = '';

@@ -1,5 +1,9 @@
 const $ = id => document.getElementById(id);
-const DEFAULT_SERVER = 'https://streamforsoul.com:8443';
+const WT_SERVERS = {
+  overseas: 'https://streamforsoul.com:8443',
+  mainland: 'https://cn.streamforsoul.com',
+};
+const DEFAULT_SERVER_REGION = 'overseas';
 
 function showView(name) {
   ['firstrun', 'idle', 'room'].forEach(v => {
@@ -14,16 +18,30 @@ function setStatusDot(state) {
   else                             $('status-text').textContent = t('status_reconnecting');
 }
 
-async function getServerUrl() {
-  return new Promise(r => chrome.storage.local.get({ serverUrl: '' }, s => {
-    r(s.serverUrl || DEFAULT_SERVER);
+async function getServerUrl(overrideRegion = '') {
+  return new Promise(r => chrome.storage.local.get({ serverRegion: '', serverUrl: '' }, s => {
+    const rawUrl = (s.serverUrl || '').trim().replace(/\/+$/, '');
+    const region = overrideRegion || s.serverRegion || (rawUrl ? 'custom' : DEFAULT_SERVER_REGION);
+    r(region === 'custom' && rawUrl ? rawUrl : WT_SERVERS[region] || WT_SERVERS[DEFAULT_SERVER_REGION]);
+  }));
+}
+function resolveServerUrlForRegion(region, customUrl = '') {
+  const rawUrl = (customUrl || '').trim().replace(/\/+$/, '');
+  if (region === 'custom' && rawUrl) return rawUrl;
+  return WT_SERVERS[region] || WT_SERVERS[DEFAULT_SERVER_REGION];
+}
+async function getServerRegion() {
+  return new Promise(r => chrome.storage.local.get({ serverRegion: '', serverUrl: '' }, s => {
+    const rawUrl = (s.serverUrl || '').trim();
+    const region = s.serverRegion || (rawUrl ? 'custom' : DEFAULT_SERVER_REGION);
+    r(region === 'custom' ? 'custom' : (WT_SERVERS[region] ? region : DEFAULT_SERVER_REGION));
   }));
 }
 async function getServerToken() {
   return new Promise(r => chrome.storage.local.get({ serverToken: '' }, s => r(s.serverToken || '')));
 }
-async function apiPost(path, data) {
-  const [url, token] = await Promise.all([getServerUrl(), getServerToken()]);
+async function apiPost(path, data, serverRegion = '') {
+  const [url, token] = await Promise.all([getServerUrl(serverRegion), getServerToken()]);
   const headers = { 'Content-Type': 'application/json' };
   if (token) headers['X-WT-Client-Token'] = token;
   const res = await fetch(`${url}/wt${path}`, {
@@ -84,12 +102,36 @@ async function loadRoomSettings() {
 }
 function saveRoomSettings(s) { chrome.storage.local.set(s); }
 
-function getInviteLink(videoId, platform, token) {
+function getInviteLink(videoId, platform, token, region) {
   if (!videoId || !platform || !token) return '';
+  const regionParam = WT_SERVERS[region] ? region : '';
   if (platform === 'youtube') {
-    return `https://www.youtube.com/watch?v=${videoId}#wt-code=${token}`;
+    return `https://www.youtube.com/watch?v=${videoId}#wt-code=${token}${regionParam ? `&wt-region=${regionParam}` : ''}`;
   }
-  return `https://www.bilibili.com/video/${videoId}/?wt_code=${token}`;
+  return `https://www.bilibili.com/video/${videoId}/?wt_code=${token}${regionParam ? `&wt_region=${regionParam}` : ''}`;
+}
+
+function regionPrefix(region) {
+  if (region === 'mainland') return 'CN';
+  if (region === 'overseas') return 'HK';
+  return '';
+}
+
+function formatInviteCode(token, region) {
+  if (!token) return '';
+  const prefix = regionPrefix(region);
+  return prefix ? `${prefix}-${token}` : token;
+}
+
+function parseInviteCode(input) {
+  const value = (input || '').trim();
+  const match = value.match(/^(CN|HK)-?(.+)$/i);
+  if (!match) return { token: value, serverRegion: '' };
+  const code = match[1].toUpperCase();
+  return {
+    token: match[2].trim(),
+    serverRegion: code === 'CN' ? 'mainland' : 'overseas',
+  };
 }
 
 function renderMemberList(members, listId, countId) {
@@ -129,6 +171,7 @@ async function checkFirstRun() {
 
 let videoInfo = null;
 let currentRoomData = null;
+let pendingJoinRegion = '';
 
 async function init() {
   const lang = await new Promise(r => chrome.storage.local.get({ lang: 'en' }, s => r(s.lang || 'en')));
@@ -178,9 +221,9 @@ async function showRoomView(room, wsState) {
     $('host-panel').style.display = '';
     $('guest-panel').style.display = 'none';
 
-    $('token-display').textContent = room.token || '-';
-
-    const link = getInviteLink(room.videoId, room.platform, room.token);
+    const region = room.serverRegion || await getServerRegion();
+    $('token-display').textContent = formatInviteCode(room.token, region) || '-';
+    const link = getInviteLink(room.videoId, room.platform, room.token, region);
     $('link-display').textContent = link || t('invite_link_none');
     $('link-display').title = link || '';
 
@@ -248,7 +291,7 @@ $('btn-create').addEventListener('click', async () => {
   if (!videoInfo) return;
   $('btn-create').disabled = true; $('btn-create').textContent = t('creating'); setError('');
   try {
-    const [nickname, clientId] = await Promise.all([getNickname(), getClientId()]);
+    const [nickname, clientId, serverRegion] = await Promise.all([getNickname(), getClientId(), getServerRegion()]);
     const res = await apiPost('/room/create', {
       host_name: nickname,
       client_id: clientId,
@@ -268,8 +311,9 @@ $('btn-create').addEventListener('click', async () => {
       platform: videoInfo.platform,
       nickname,
       tabId: videoInfo.tabId,
+      serverRegion,
     });
-    const roomObj = { isHost: true, token: res.token, roomId: res.room_id, videoId: videoInfo.videoId, platform: videoInfo.platform, members: [] };
+    const roomObj = { isHost: true, token: res.token, roomId: res.room_id, videoId: videoInfo.videoId, platform: videoInfo.platform, members: [], serverRegion };
     showRoomView(roomObj, 'connecting');
   } catch (e) {
     setError(e.message || t('err_create_failed'));
@@ -279,12 +323,15 @@ $('btn-create').addEventListener('click', async () => {
 });
 
 $('btn-join').addEventListener('click', async () => {
-  const token = $('input-token').value.trim();
+  const parsedCode = parseInviteCode($('input-token').value);
+  const token = parsedCode.token;
   if (!token) { setError(t('err_enter_code')); return; }
   setError(''); $('btn-join').disabled = true; $('btn-join').textContent = t('joining');
   try {
-    const [nickname, clientId] = await Promise.all([getNickname(), getClientId()]);
-    const info = await apiPost('/room/join', { token, guest_name: nickname, client_id: clientId });
+    const [nickname, clientId, serverRegion] = await Promise.all([getNickname(), getClientId(), getServerRegion()]);
+    const joinRegion = parsedCode.serverRegion || pendingJoinRegion || serverRegion;
+    pendingJoinRegion = '';
+    const info = await apiPost('/room/join', { token, guest_name: nickname, client_id: clientId }, joinRegion);
     chrome.tabs.query({ active: true, currentWindow: true }, tabs => {
       const tab = tabs[0];
       const tabId = tab?.id;
@@ -301,8 +348,9 @@ $('btn-join').addEventListener('click', async () => {
         tabId,
         joinToken: token,
         title: info.title || '',
+        serverRegion: joinRegion,
       });
-      showRoomView({ isHost: false, roomId: info.room_id, hostName: info.host_name, platform: info.platform, members: [] }, 'connecting');
+      showRoomView({ isHost: false, roomId: info.room_id, hostName: info.host_name, platform: info.platform, members: [], serverRegion: joinRegion }, 'connecting');
       if (tab && info.video_id && !info.host_searching) {
         const url = info.platform === 'youtube'
           ? `https://www.youtube.com/watch?v=${info.video_id}`
@@ -399,7 +447,7 @@ async function renderHistory() {
 
   joinHistory.forEach((entry, i) => {
     $(`hcopy-${i}`)?.addEventListener('click', () => {
-      navigator.clipboard.writeText(entry.token).then(() => {
+      navigator.clipboard.writeText(formatInviteCode(entry.token, entry.serverRegion)).then(() => {
         const btn = $(`hcopy-${i}`);
         if (!btn) return;
         btn.textContent = 'OK';
@@ -407,16 +455,17 @@ async function renderHistory() {
       });
     });
     $(`hjoin-${i}`)?.addEventListener('click', () => {
-      $('input-token').value = entry.token;
+      pendingJoinRegion = entry.serverRegion || '';
+      $('input-token').value = formatInviteCode(entry.token, entry.serverRegion);
       $('btn-join').click();
     });
   });
 
-  const [serverUrl, serverToken] = await Promise.all([getServerUrl(), getServerToken()]);
+  const [defaultServerUrl, serverToken] = await Promise.all([getServerUrl(), getServerToken()]);
   const headers = {};
   if (serverToken) headers['X-WT-Client-Token'] = serverToken;
   const checks = joinHistory.map((entry, i) =>
-    fetch(`${serverUrl}/wt/room/check?token=${encodeURIComponent(entry.token)}`,
+    fetch(`${resolveServerUrlForRegion(entry.serverRegion, entry.serverUrl) || defaultServerUrl}/wt/room/check?token=${encodeURIComponent(entry.token)}`,
       { headers, signal: AbortSignal.timeout(5000) })
       .then(r => r.json())
       .then(data => ({ i, exists: !!data.exists }))

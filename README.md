@@ -53,52 +53,44 @@ Go Server
 ### One-command install
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/YOUR_USERNAME/watchtogether/main/watchtogether/install.sh \
-  | bash -s -- --port 8892 --domain watch.example.com
+curl -fsSL https://raw.githubusercontent.com/DYINGTIMENANOHA/watchtogether-browser-tool/main/watchtogether/install.sh \
+  | sudo bash -s -- --domain watch.example.com --email admin@example.com
 ```
 
 Or clone first and run locally:
 
 ```bash
-git clone https://github.com/YOUR_USERNAME/watchtogether
-cd watchtogether/watchtogether
-bash install.sh --port 8892 --domain watch.example.com
+git clone https://github.com/DYINGTIMENANOHA/watchtogether-browser-tool.git /opt/watchtogether-extension
+cd /opt/watchtogether-extension
+sudo bash watchtogether/install.sh --domain watch.example.com --email admin@example.com
 ```
 
 The script will:
 1. Install Go if needed
 2. Compile the binary
 3. Register and start a `systemd` service
-4. Open the firewall port
+4. Install and configure Nginx
+5. Request a Let's Encrypt certificate when DNS is ready
+6. Run local and HTTPS health checks
+
+For two public relays, run the same command on both servers with different domains, for example:
+
+```bash
+# Hong Kong / overseas VPS
+sudo bash watchtogether/install.sh --domain hk.example.com --email admin@example.com
+
+# Shanghai / mainland VPS
+sudo bash watchtogether/install.sh --domain cn.example.com --email admin@example.com
+```
+
+The browser extension can then expose these as the Overseas and Mainland China regions.
 
 ### Nginx + HTTPS (required for the extension)
 
-Chrome extensions require `wss://` (secure WebSocket). Install Nginx and Certbot:
+Chrome extensions require `wss://` (secure WebSocket). The one-command installer can configure Nginx and Certbot automatically. If you maintain Nginx yourself, add this to your HTTPS server block instead:
 
 ```bash
-apt-get install -y nginx certbot python3-certbot-nginx
-certbot --nginx -d watch.example.com
-```
-
-Add this to your Nginx server block (see `watchtogether/nginx_snippet.conf` for the full snippet):
-
-```nginx
-location /wt/room/ {
-    proxy_pass http://127.0.0.1:8892/room/;
-    proxy_set_header X-Real-IP $remote_addr;
-}
-
-location /wt/ws {
-    proxy_pass http://127.0.0.1:8892/ws;
-    proxy_http_version 1.1;
-    proxy_set_header Upgrade $http_upgrade;
-    proxy_set_header Connection "upgrade";
-    proxy_read_timeout 3600s;
-}
-
-location /wt/health {
-    proxy_pass http://127.0.0.1:8892/health;
-}
+include /opt/watchtogether-extension/watchtogether/nginx_snippet.conf;
 ```
 
 ### Service management

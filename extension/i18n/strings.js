@@ -1,4 +1,4 @@
-// WatchTogether UI strings.
+﻿// WatchTogether UI strings.
 // Code and comments stay English; UI copy supports English, Chinese, and Japanese.
 
 const WT_REPO_URL = 'https://github.com/DYINGTIMENANOHA/watchtogether-browser-tool';
@@ -26,6 +26,13 @@ const WT_STRINGS = {
     server_url_label: 'Server URL',
     server_url_placeholder: 'https://your-server.com',
     server_url_hint: 'Leave blank to use the official server',
+    server_region_label: 'Server Region',
+    server_region_overseas: 'Overseas / Hong Kong',
+    server_region_mainland: 'Mainland China / Shanghai',
+    server_region_custom: 'Custom server',
+    server_region_hint: 'Choose the closest relay server for lower latency.',
+    server_permission_invalid_url: 'Enter a valid custom server URL.',
+    server_permission_denied: 'Please allow access to this custom server.',
     server_token_label: 'Server Access Token',
     server_token_placeholder: 'Optional token for private servers',
     server_token_hint: 'Only needed when your server has CLIENT_TOKEN configured',
@@ -209,6 +216,13 @@ const WT_STRINGS = {
     server_url_label: '服务器地址',
     server_url_placeholder: 'https://your-server.com',
     server_url_hint: '留空使用官方服务器',
+    server_region_label: '服务器区域',
+    server_region_overseas: '海外 / 香港',
+    server_region_mainland: '中国大陆 / 上海',
+    server_region_custom: '自定义服务器',
+    server_region_hint: '选择离你更近的中继服务器以降低延迟。',
+    server_permission_invalid_url: '请输入有效的自定义服务器地址。',
+    server_permission_denied: '请允许扩展访问这个自定义服务器。',
     server_token_label: '服务器访问令牌',
     server_token_placeholder: '私有服务器可选令牌',
     server_token_hint: '仅当服务器配置了 CLIENT_TOKEN 时需要填写',
@@ -392,6 +406,13 @@ const WT_STRINGS = {
     server_url_label: 'サーバーURL',
     server_url_placeholder: 'https://your-server.com',
     server_url_hint: '空白の場合は公式サーバーを使用',
+    server_region_label: 'サーバー地域',
+    server_region_overseas: '海外 / 香港',
+    server_region_mainland: '中国本土 / 上海',
+    server_region_custom: 'カスタムサーバー',
+    server_region_hint: '近い中継サーバーを選ぶと遅延が少なくなります。',
+    server_permission_invalid_url: '有効なカスタムサーバーURLを入力してください。',
+    server_permission_denied: 'このカスタムサーバーへのアクセスを許可してください。',
     server_token_label: 'サーバーアクセストークン',
     server_token_placeholder: 'プライベートサーバー用の任意トークン',
     server_token_hint: 'サーバーに CLIENT_TOKEN が設定されている場合のみ必要です',

@@ -8,7 +8,12 @@
     "https://www.youtube.com/*",
     "https://www.bilibili.com/*",
     "https://search.bilibili.com/*",
-    "https://streamforsoul.com/*"
+    "https://streamforsoul.com/*",
+    "https://*.streamforsoul.com/*"
+  ],
+  "optional_host_permissions": [
+    "https://*/*",
+    "http://*/*"
   ],
   "minimum_chrome_version": "103",
   "background": {

@@ -1,10 +1,24 @@
-#!/bin/bash
-SERVICE="watchtogether.service"
+#!/usr/bin/env bash
+set -euo pipefail
+
+SERVICE="${SERVICE:-watchtogether.service}"
 RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; CYAN='\033[0;36m'; NC='\033[0m'
-APP_DIR="/opt/watchtogether/backend"
+APP_DIR="${APP_DIR:-}"
+if [[ -z "$APP_DIR" ]]; then
+  SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+  if [[ -d "${SCRIPT_DIR}/backend" ]]; then
+    APP_DIR="${SCRIPT_DIR}/backend"
+  elif [[ -d "/opt/watchtogether-extension/watchtogether/backend" ]]; then
+    APP_DIR="/opt/watchtogether-extension/watchtogether/backend"
+  else
+    APP_DIR="/opt/watchtogether/backend"
+  fi
+fi
 MONITOR_DIR="$(dirname "$APP_DIR")"
-HEALTH_URL="http://127.0.0.1:8892/health"
-PUBLIC_PORTS_REGEX=':(8892|9091)\b'
+PORT="${PORT:-8892}"
+PROM_PORT="${PROM_PORT:-9091}"
+HEALTH_URL="${HEALTH_URL:-http://127.0.0.1:${PORT}/health}"
+PUBLIC_PORTS_REGEX=":(${PORT}|${PROM_PORT})\\b"
 
 check_bind_host() {
   if systemctl show "$SERVICE" -p Environment 2>/dev/null | grep -q 'BIND_HOST=127.0.0.1'; then
@@ -94,6 +108,10 @@ case "$1" in
     ;;
   deploy)
     echo -e "${CYAN}building and restarting...${NC}"
+    if [[ ! -d "$APP_DIR" ]]; then
+      echo -e "${RED}missing app dir${NC} $APP_DIR"
+      exit 1
+    fi
     cd "$APP_DIR" && go build -o watchtogether . || { echo -e "${RED}build failed${NC}"; exit 1; }
     systemctl daemon-reload
     systemctl restart $SERVICE

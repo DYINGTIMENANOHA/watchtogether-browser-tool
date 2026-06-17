@@ -61,6 +61,16 @@ input:checked+.toggle-slider::after{transform:translateX(16px);}
   </div>
 
   <div class="field">
+    <label for="server-region" data-i18n="server_region_label">Server Region</label>
+    <select id="server-region">
+      <option value="overseas" data-i18n="server_region_overseas">Overseas / Hong Kong</option>
+      <option value="mainland" data-i18n="server_region_mainland">Mainland China / Shanghai</option>
+      <option value="custom" data-i18n="server_region_custom">Custom server</option>
+    </select>
+    <div class="hint" data-i18n="server_region_hint">Choose the closest relay server for lower latency.</div>
+  </div>
+
+  <div class="field" id="server-url-field">
     <div class="label-row">
       <label for="server-url" data-i18n="server_url_label">Server URL</label>
       <button id="btn-selfhost-help" class="help-icon-btn" type="button">?</button>
