@@ -30,6 +30,39 @@ let bubbleHidden = false;
 let vetoBanner = null, vetoTimerId = null;
 let switchBanner = null;
 let infoBanner = null, infoTimerId = null;
+let joinCooldownTimer = null;
+
+function isRateLimitError(msg) {
+  return /try later|rate limit|too many/i.test(msg || '');
+}
+
+function startPanelJoinCooldown(seconds = 60) {
+  if (joinCooldownTimer) clearInterval(joinCooldownTimer);
+  const btn = panel?.querySelector('#wt-do-join-btn');
+  const errEl = panel?.querySelector('#wt-join-err');
+  let remaining = seconds;
+  const update = () => {
+    if (btn) { btn.disabled = true; btn.textContent = `${t('panel_join_btn')} (${remaining}s)`; }
+    if (errEl) errEl.textContent = t('err_rate_limited');
+  };
+  update();
+  joinCooldownTimer = setInterval(() => {
+    remaining--;
+    if (remaining <= 0) {
+      clearInterval(joinCooldownTimer);
+      joinCooldownTimer = null;
+      const b = panel?.querySelector('#wt-do-join-btn');
+      const e = panel?.querySelector('#wt-join-err');
+      if (b) { b.disabled = false; b.textContent = t('panel_join_btn'); }
+      if (e) e.textContent = '';
+    } else {
+      const b = panel?.querySelector('#wt-do-join-btn');
+      const e = panel?.querySelector('#wt-join-err');
+      if (b) b.textContent = `${t('panel_join_btn')} (${remaining}s)`;
+      if (e) e.textContent = t('err_rate_limited');
+    }
+  }, 1000);
+}
 
 function initOverlay() {
   shadowHost = document.createElement('div');
@@ -262,7 +295,7 @@ function renderIdlePanel() {
 
     <div class="wt-section">
       <div class="wt-section-label">${t('panel_join_section')}</div>
-      <input class="wt-input" id="wt-code-input" placeholder="${t('panel_code_placeholder')}" maxlength="8"
+      <input class="wt-input" id="wt-code-input" placeholder="${t('panel_code_placeholder')}" maxlength="16"
         value="${hashCode ? escHtml(hashCode) : ''}">
       <input class="wt-input" id="wt-nick-input" placeholder="${t('panel_nick_placeholder')}" maxlength="20" style="margin-top:6px">
       <button class="wt-btn secondary" id="wt-do-join-btn" style="margin-top:6px">${t('panel_join_btn')}</button>
@@ -342,8 +375,13 @@ function renderIdlePanel() {
 
     chrome.runtime.sendMessage({ type: 'api_join_room', token, nickname, serverRegion: parsedCode.serverRegion || inviteRegion || currentServerRegion }, res => {
       if (!res?.ok) {
-        if (errEl) errEl.textContent = res?.error || t('panel_err_failed');
-        btn.disabled = false; btn.textContent = t('panel_join_btn');
+        const errMsg = res?.error || '';
+        if (isRateLimitError(errMsg)) {
+          startPanelJoinCooldown(60);
+        } else {
+          if (errEl) errEl.textContent = errMsg || t('panel_err_failed');
+          btn.disabled = false; btn.textContent = t('panel_join_btn');
+        }
         return;
       }
       const info = res.data;
@@ -1075,7 +1113,11 @@ async function onPageReady() {
             }, 600);
           }
         } else {
-          showNonActiveBanner(isHost ? 'host' : 'guest');
+          if (isHost && adapter?.getVideoId()) {
+            showInfo(t('banner_host_invite_hint'), 10000);
+          } else {
+            showNonActiveBanner(isHost ? 'host' : 'guest');
+          }
         }
         updateBubble();
         if (hashCode) showInfo(t('info_already_in_room'), 4000);

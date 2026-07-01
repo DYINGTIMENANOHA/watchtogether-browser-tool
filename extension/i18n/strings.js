@@ -72,6 +72,7 @@ const WT_STRINGS = {
     err_create_failed: 'Create failed, please retry',
     err_join_failed: 'Join failed, please retry',
     err_own_room: 'Cannot join your own room',
+    err_rate_limited: 'Too many attempts, please wait before retrying',
 
     status_syncing: 'Syncing',
     status_connecting: 'Connecting...',
@@ -143,6 +144,7 @@ const WT_STRINGS = {
     banner_host_reconnecting: 'Host {name} disconnected, waiting...',
     banner_host_reconnected: 'Host reconnected',
     banner_non_active_host: 'You are in a sync room as host.',
+    banner_host_invite_hint: 'You are hosting a room — click the side button to move control here, then share the invite.',
     banner_non_active_guest: 'You are in a sync room as guest.',
     banner_move_here: 'Move Here',
     reconnect_prompt: 'Reconnected. Catch up to host?',
@@ -262,6 +264,7 @@ const WT_STRINGS = {
     err_create_failed: '创建失败，请重试',
     err_join_failed: '加入失败，请重试',
     err_own_room: '不能加入自己创建的房间',
+    err_rate_limited: '尝试次数过多，请稍后再试',
 
     status_syncing: '同步中',
     status_connecting: '连接中...',
@@ -333,6 +336,7 @@ const WT_STRINGS = {
     banner_host_reconnecting: '房主 {name} 断线中，等待重连...',
     banner_host_reconnected: '房主已重新连接',
     banner_non_active_host: '你已作为房主加入同步房间。',
+    banner_host_invite_hint: '你正在主持房间 — 点击侧边按钮将控制移到此视频，然后分享邀请码。',
     banner_non_active_guest: '你已作为房客加入同步房间。',
     banner_move_here: '移到这里',
     reconnect_prompt: '重连成功，是否追上房主？',
@@ -452,6 +456,7 @@ const WT_STRINGS = {
     err_create_failed: '作成に失敗しました。再試行してください',
     err_join_failed: '参加に失敗しました。再試行してください',
     err_own_room: '自分のルームには参加できません',
+    err_rate_limited: '試行回数が多すぎます。しばらくお待ちください',
 
     status_syncing: '同期中',
     status_connecting: '接続中...',
@@ -523,6 +528,7 @@ const WT_STRINGS = {
     banner_host_reconnecting: 'ホスト {name} が切断しました。再接続を待っています...',
     banner_host_reconnected: 'ホストが再接続しました',
     banner_non_active_host: 'ホストとして同期ルームに参加中です。',
+    banner_host_invite_hint: 'ルームをホスト中 — サイドボタンをクリックしてコントロールをここに移動し、招待コードを共有してください。',
     banner_non_active_guest: 'ゲストとして同期ルームに参加中です。',
     banner_move_here: 'ここに移動',
     reconnect_prompt: '再接続しました。ホストに追いつきますか？',

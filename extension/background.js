@@ -666,8 +666,14 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
 });
 
 chrome.tabs.onRemoved.addListener((tabId) => {
-  if (tabId === activeTabId && currentRoom) {
-    console.log('[WT] Active tab closed, leaving room');
+  if (tabId !== activeTabId || !currentRoom) return;
+  if (currentRoom.isHost) {
+    console.log('[WT] Host active tab closed, keeping room alive, marking host searching');
+    activeTabId = null;
+    currentRoom.hostSearching = true;
+    wsSend({ type: 'host_searching' });
+  } else {
+    console.log('[WT] Guest active tab closed, leaving room');
     disconnectWS();
     _broadcastToAllVideoTabs({ type: 'self_left_room' });
   }
@@ -678,8 +684,15 @@ chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
   const url = tab.url || '';
   if (!url || url.startsWith('about:') || url.startsWith('chrome:')) return;
   if (!url.includes('youtube.com') && !url.includes('bilibili.com')) {
-    console.log('[WT] Host left video platform, dissolving room');
-    disconnectWS();
-    _broadcastToAllVideoTabs({ type: 'self_left_room' });
+    if (currentRoom.isHost) {
+      console.log('[WT] Host left video platform, keeping room alive, marking host searching');
+      activeTabId = null;
+      currentRoom.hostSearching = true;
+      wsSend({ type: 'host_searching' });
+    } else {
+      console.log('[WT] Guest left video platform, leaving room');
+      disconnectWS();
+      _broadcastToAllVideoTabs({ type: 'self_left_room' });
+    }
   }
 });

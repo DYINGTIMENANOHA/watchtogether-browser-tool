@@ -172,6 +172,35 @@ async function checkFirstRun() {
 let videoInfo = null;
 let currentRoomData = null;
 let pendingJoinRegion = '';
+let joinCooldownTimer = null;
+
+function isRateLimitError(msg) {
+  return /try later|rate limit|too many/i.test(msg || '');
+}
+
+function startJoinCooldown(seconds = 60) {
+  if (joinCooldownTimer) clearInterval(joinCooldownTimer);
+  let remaining = seconds;
+  const btn = $('btn-join');
+  const update = () => {
+    btn.disabled = true;
+    btn.textContent = `${t('join_btn')} (${remaining}s)`;
+    setError(t('err_rate_limited'));
+  };
+  update();
+  joinCooldownTimer = setInterval(() => {
+    remaining--;
+    if (remaining <= 0) {
+      clearInterval(joinCooldownTimer);
+      joinCooldownTimer = null;
+      btn.disabled = false;
+      btn.textContent = t('join_btn');
+      setError('');
+    } else {
+      update();
+    }
+  }, 1000);
+}
 
 async function init() {
   const lang = await new Promise(r => chrome.storage.local.get({ lang: 'en' }, s => r(s.lang || 'en')));
@@ -359,8 +388,12 @@ $('btn-join').addEventListener('click', async () => {
       }
     });
   } catch (e) {
-    setError(e.message || t('err_invalid_code'));
-  } finally {
+    const msg = e.message || '';
+    if (isRateLimitError(msg)) {
+      startJoinCooldown(60);
+      return;
+    }
+    setError(msg || t('err_invalid_code'));
     $('btn-join').disabled = false; $('btn-join').textContent = t('join_btn');
   }
 });

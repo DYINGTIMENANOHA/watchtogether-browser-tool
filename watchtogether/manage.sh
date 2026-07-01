@@ -88,7 +88,7 @@ maybe_reload_nginx() {
   fi
 }
 
-case "$1" in
+case "${1:-}" in
   start)
     systemctl start $SERVICE
     sleep 1
@@ -121,7 +121,7 @@ case "$1" in
       check_bind_host
       check_health
       check_ports
-      maybe_reload_nginx "$2"
+      maybe_reload_nginx "${2:-}"
     else
       echo -e "${RED}deploy failed${NC}"
       systemctl status $SERVICE --no-pager | head -20
