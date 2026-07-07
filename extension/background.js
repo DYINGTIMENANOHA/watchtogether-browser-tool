@@ -4,6 +4,8 @@ const WT_SERVERS = {
   mainland: 'https://cn.streamforsoul.com',
 };
 const DEFAULT_SERVER_REGION = 'overseas';
+const ROOM_SESSION_KEY = 'wtCurrentRoom';
+const KEEPALIVE_ALARM = 'wtKeepAlive';
 
 let ws = null;
 let wsState = 'disconnected'; // disconnected | connecting | connected | reconnecting
@@ -16,12 +18,78 @@ let activeTabId = null;
 let _cachedClientId = null;
 let _pendingTransferCallback = null;
 
+function persistCurrentRoom() {
+  if (!currentRoom) return;
+  const roomState = { ...currentRoom };
+  delete roomState.activeTabId;
+  chrome.storage.local.set({
+    [ROOM_SESSION_KEY]: {
+      ...roomState,
+      activeTabId,
+      _wasReconnecting: false,
+    },
+  });
+}
+
+function clearRoomSession() {
+  chrome.storage.local.remove(ROOM_SESSION_KEY);
+  chrome.alarms.clear(KEEPALIVE_ALARM);
+}
+
+function startKeepAliveAlarm() {
+  chrome.alarms.create(KEEPALIVE_ALARM, { periodInMinutes: 1 });
+}
+
+async function loadStoredRoom() {
+  return new Promise(resolve => {
+    chrome.storage.local.get({ [ROOM_SESSION_KEY]: null }, data => resolve(data[ROOM_SESSION_KEY]));
+  });
+}
+
+async function keepAliveOrReconnect() {
+  if (!currentRoom) {
+    const storedRoom = await loadStoredRoom();
+    if (storedRoom?.roomId && storedRoom?.nickname) {
+      activeTabId = storedRoom.activeTabId ?? null;
+      currentRoom = { ...storedRoom, members: storedRoom.members || [], _wasReconnecting: true };
+    }
+  }
+  if (!currentRoom) {
+    chrome.alarms.clear(KEEPALIVE_ALARM);
+    return;
+  }
+  if (ws && ws.readyState === WebSocket.OPEN) {
+    wsSend({ type: 'heartbeat' });
+    return;
+  }
+  if (wsState === 'connecting' || wsState === 'reconnecting') return;
+  if (currentRoom.roomId && currentRoom.nickname) {
+    reconnectAttempts = 0;
+    currentRoom._wasReconnecting = true;
+    connectWS(currentRoom.roomId, currentRoom.nickname);
+  }
+}
+
 chrome.runtime.onInstalled.addListener(async (details) => {
   if (details.reason === 'install') {
     const clientId = _generateUUID();
     const nickname = _generateNickname('en');
     chrome.storage.local.set({ clientId, nickname, nicknameAuto: true, nicknameLang: 'en', firstRun: true, showBubble: true });
   }
+});
+
+chrome.runtime.onStartup?.addListener(() => {
+  loadStoredRoom().then(storedRoom => {
+    if (storedRoom?.roomId && storedRoom?.nickname) startKeepAliveAlarm();
+  });
+});
+
+chrome.alarms.onAlarm.addListener(alarm => {
+  if (alarm.name === KEEPALIVE_ALARM) keepAliveOrReconnect();
+});
+
+loadStoredRoom().then(storedRoom => {
+  if (storedRoom?.roomId && storedRoom?.nickname) startKeepAliveAlarm();
 });
 
 function _generateUUID() {
@@ -200,6 +268,8 @@ async function connectWS(roomId, name) {
         }
       }
     }
+    persistCurrentRoom();
+    startKeepAliveAlarm();
     _broadcastStatus('connected');
   };
 
@@ -237,6 +307,7 @@ async function connectWS(roomId, name) {
       console.log('[WT] Reconnect exhausted, leaving room');
       _broadcastToAllVideoTabs({ type: 'room_lost', hostName: '(connection timeout)', autoLeave: true });
       currentRoom = null; mySid = null; activeTabId = null;
+      clearRoomSession();
     }
   };
 
@@ -256,6 +327,7 @@ function disconnectWS() {
   currentRoom = null;
   mySid = null;
   activeTabId = null;
+  clearRoomSession();
 }
 
 function wsSend(msg) {
@@ -293,6 +365,7 @@ function handleServerMessage(msg) {
     case 'welcome':
       mySid = msg.sid;
       if (currentRoom) currentRoom.isHost = msg.is_host;
+      persistCurrentRoom();
       sendToActiveTab({ type: 'room_joined', isHost: msg.is_host, sid: msg.sid });
       if (!msg.is_host && currentRoom?._wasReconnecting) {
         sendToActiveTab({ type: 'reconnect_catch_up_prompt' });
@@ -308,7 +381,9 @@ function handleServerMessage(msg) {
       console.log('[WT] Connection kicked:', msg.reason);
       wsState = 'disconnected';
       currentRoom = null; mySid = null; activeTabId = null;
+      clearRoomSession();
       _broadcastToAllVideoTabs({ type: 'ws_status', status: 'disconnected' });
+      _broadcastToAllVideoTabs({ type: 'self_left_room' });
       break;
 
     case 'sync_apply':
@@ -344,6 +419,7 @@ function handleServerMessage(msg) {
         currentRoom.videoId = msg.video_id;
         currentRoom.platform = msg.platform;
         currentRoom.hostSearching = false;
+        persistCurrentRoom();
       }
       sendToActiveTab({
         type: 'host_switched',
@@ -358,7 +434,10 @@ function handleServerMessage(msg) {
       break;
 
     case 'host_searching':
-      if (currentRoom) currentRoom.hostSearching = true;
+      if (currentRoom) {
+        currentRoom.hostSearching = true;
+        persistCurrentRoom();
+      }
       sendToActiveTab({ type: 'host_searching' });
       break;
 
@@ -374,10 +453,25 @@ function handleServerMessage(msg) {
       sendToActiveTab({ type: 'room_lost', hostName: msg.host_name });
       _broadcastToAllVideoTabs({ type: 'room_dissolved', hostName: msg.host_name });
       currentRoom = null; mySid = null; activeTabId = null;
+      clearRoomSession();
       break;
 
     case 'you_are_guest':
-      if (currentRoom) currentRoom.isHost = false;
+      if (currentRoom) {
+        currentRoom.isHost = false;
+        currentRoom.hostName = msg.new_host_name || currentRoom.hostName;
+        if (currentRoom.token) {
+          addToJoinHistory({
+            token: currentRoom.token,
+            hostName: currentRoom.hostName || '',
+            platform: currentRoom.platform || '',
+            videoId: currentRoom.videoId || '',
+            title: currentRoom.title || '',
+            serverRegion: currentRoom.serverRegion || '',
+          });
+        }
+        persistCurrentRoom();
+      }
       if (_pendingTransferCallback) {
         const cb = _pendingTransferCallback;
         _pendingTransferCallback = null;
@@ -404,6 +498,7 @@ function handleServerMessage(msg) {
             is_host: m.sid === msg.new_host_sid,
           }));
         }
+        persistCurrentRoom();
       }
       sendToActiveTab({
         type: 'host_changed',
@@ -419,6 +514,7 @@ function handleServerMessage(msg) {
       if (currentRoom?.members) {
         if (!currentRoom.members.find(m => m.sid === msg.sid)) {
           currentRoom.members.push({ sid: msg.sid, name: msg.name, is_host: false });
+          persistCurrentRoom();
         }
       }
       break;
@@ -426,11 +522,15 @@ function handleServerMessage(msg) {
     case 'member_left':
       if (currentRoom?.members) {
         currentRoom.members = currentRoom.members.filter(m => m.sid !== msg.sid);
+        persistCurrentRoom();
       }
       break;
 
     case 'member_list':
-      if (currentRoom) currentRoom.members = msg.members;
+      if (currentRoom) {
+        currentRoom.members = msg.members;
+        persistCurrentRoom();
+      }
       sendToActiveTab({ type: 'member_list', members: msg.members, count: msg.count });
       _broadcastToAllVideoTabs({ type: 'member_list', members: msg.members, count: msg.count });
       break;
@@ -449,6 +549,8 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         hostName: msg.hostName || null,
         videoId: msg.videoId || null,
         platform: msg.platform || null,
+        title: msg.title || '',
+        nickname: msg.nickname || '',
         vetoEnabled: false,
         vetoSeconds: 5,
         guestControlAllowed: false,
@@ -468,6 +570,8 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         });
       }
       reconnectAttempts = 0;
+      persistCurrentRoom();
+      startKeepAliveAlarm();
       connectWS(msg.roomId, msg.nickname);
       sendResponse({ ok: true });
       break;
@@ -520,6 +624,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           currentRoom.hostSearching = false;
           currentRoom.videoId = msg.videoId;
           currentRoom.platform = msg.platform;
+          persistCurrentRoom();
           wsSend({
             type: 'video_changed',
             video_id: msg.videoId,
@@ -530,6 +635,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           });
         } else {
           currentRoom.hostSearching = true;
+          persistCurrentRoom();
           wsSend({ type: 'host_searching' });
         }
       }
@@ -537,12 +643,12 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
 
     case 'veto_config':
       wsSend({ type: 'veto_config', action: msg.enabled ? 'true' : 'false', seek_time: msg.seconds });
-      if (currentRoom) { currentRoom.vetoEnabled = msg.enabled; currentRoom.vetoSeconds = msg.seconds; }
+      if (currentRoom) { currentRoom.vetoEnabled = msg.enabled; currentRoom.vetoSeconds = msg.seconds; persistCurrentRoom(); }
       break;
 
     case 'guest_control_config':
       wsSend({ type: 'guest_control_config', allowed: msg.allowed });
-      if (currentRoom) currentRoom.guestControlAllowed = msg.allowed;
+      if (currentRoom) { currentRoom.guestControlAllowed = msg.allowed; persistCurrentRoom(); }
       break;
 
     case 'api_create_room':
@@ -610,6 +716,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         chrome.tabs.sendMessage(oldTabId, { type: 'self_left_room' }).catch(() => {});
       }
       activeTabId = newTabId;
+      persistCurrentRoom();
       sendResponse({ ok: true });
       break;
     }
@@ -671,6 +778,7 @@ chrome.tabs.onRemoved.addListener((tabId) => {
     console.log('[WT] Host active tab closed, keeping room alive, marking host searching');
     activeTabId = null;
     currentRoom.hostSearching = true;
+    persistCurrentRoom();
     wsSend({ type: 'host_searching' });
   } else {
     console.log('[WT] Guest active tab closed, leaving room');
@@ -688,6 +796,7 @@ chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
       console.log('[WT] Host left video platform, keeping room alive, marking host searching');
       activeTabId = null;
       currentRoom.hostSearching = true;
+      persistCurrentRoom();
       wsSend({ type: 'host_searching' });
     } else {
       console.log('[WT] Guest left video platform, leaving room');

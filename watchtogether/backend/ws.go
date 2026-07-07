@@ -14,8 +14,7 @@ import (
 )
 
 const (
-	MaxRoomMembers      = 5
-	HostReconnectWindow = 5 * time.Second
+	HostReconnectWindow = 15 * time.Second
 )
 
 type msgRateTracker struct {
@@ -161,7 +160,7 @@ func handleWS(cfg Config) http.HandlerFunc {
 				_ = conn.WriteJSON(map[string]any{"type": "error", "message": "cannot join your own room"})
 				return
 			}
-			if len(room.Members) >= MaxRoomMembers {
+			if len(room.Members) >= cfg.MaxRoomMembers {
 				room.Unlock()
 				_ = conn.WriteJSON(map[string]any{"type": "error", "message": "room full"})
 				return

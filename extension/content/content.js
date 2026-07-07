@@ -895,6 +895,7 @@ function showSwitchBanner(hostName, videoId, platform) {
   switchBanner.innerHTML = `
     <span class="wt-banner-text">${t('banner_switch_text', { name: escHtml(hostName) })}</span>
     <button class="wt-bBtn ok" id="wt-sw-follow">${t('banner_switch_follow')}</button>
+    <button class="wt-bBtn" id="wt-sw-close">${t('close')}</button>
     <button class="wt-bBtn danger" id="wt-sw-leave">${t('banner_switch_leave')}</button>
   `;
   b.appendChild(switchBanner);
@@ -902,6 +903,9 @@ function showSwitchBanner(hostName, videoId, platform) {
   switchBanner.querySelector('#wt-sw-follow')?.addEventListener('click', () => {
     switchBanner?.remove(); switchBanner = null;
     location.href = targetUrl;
+  });
+  switchBanner.querySelector('#wt-sw-close')?.addEventListener('click', () => {
+    switchBanner?.remove(); switchBanner = null;
   });
   switchBanner.querySelector('#wt-sw-leave')?.addEventListener('click', () => {
     switchBanner?.remove(); switchBanner = null;
