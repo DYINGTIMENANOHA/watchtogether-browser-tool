@@ -7,18 +7,44 @@ import (
 	"github.com/gorilla/websocket"
 )
 
+const wsWriteWait = 10 * time.Second
+
 type Member struct {
 	SID      string
 	ClientID string
 	Name     string
 	Conn     *websocket.Conn
+	LastSeen time.Time
 	mu       sync.Mutex
 }
 
 func (m *Member) Send(msg map[string]any) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	return m.Conn.WriteJSON(msg)
+	if err := m.Conn.SetWriteDeadline(time.Now().Add(wsWriteWait)); err != nil {
+		_ = m.Conn.Close()
+		return err
+	}
+	if err := m.Conn.WriteJSON(msg); err != nil {
+		_ = m.Conn.Close()
+		return err
+	}
+	return nil
+}
+
+func (m *Member) Ping() error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	deadline := time.Now().Add(wsWriteWait)
+	if err := m.Conn.SetWriteDeadline(deadline); err != nil {
+		_ = m.Conn.Close()
+		return err
+	}
+	if err := m.Conn.WriteControl(websocket.PingMessage, nil, deadline); err != nil {
+		_ = m.Conn.Close()
+		return err
+	}
+	return nil
 }
 
 type Room struct {
@@ -29,6 +55,7 @@ type Room struct {
 	HostName            string
 	HostSearching       bool
 	HostReconnecting    bool
+	Closed              bool
 	HostReconnectTimer  *time.Timer
 	VideoID             string
 	Platform            string
@@ -70,19 +97,19 @@ type PendingAction struct {
 }
 
 type WSMessage struct {
-	Type     string  `json:"type"`
-	Action   string  `json:"action,omitempty"`
-	SeekTime float64 `json:"seek_time,omitempty"`
-	VideoID  string  `json:"video_id,omitempty"`
-	Platform string  `json:"platform,omitempty"`
-	IsLive   bool    `json:"is_live,omitempty"`
-	Name     string  `json:"name,omitempty"`
-	ClientID string  `json:"client_id,omitempty"`
-	RoomID   string  `json:"room_id,omitempty"`
-	Allowed   bool   `json:"allowed,omitempty"`
-	NewToken  string `json:"new_token,omitempty"`
-	MsgTitle  string `json:"title,omitempty"`
-	TargetSID string `json:"target_sid,omitempty"`
+	Type      string  `json:"type"`
+	Action    string  `json:"action,omitempty"`
+	SeekTime  float64 `json:"seek_time,omitempty"`
+	VideoID   string  `json:"video_id,omitempty"`
+	Platform  string  `json:"platform,omitempty"`
+	IsLive    bool    `json:"is_live,omitempty"`
+	Name      string  `json:"name,omitempty"`
+	ClientID  string  `json:"client_id,omitempty"`
+	RoomID    string  `json:"room_id,omitempty"`
+	Allowed   bool    `json:"allowed,omitempty"`
+	NewToken  string  `json:"new_token,omitempty"`
+	MsgTitle  string  `json:"title,omitempty"`
+	TargetSID string  `json:"target_sid,omitempty"`
 }
 
 type CreateRoomRequest struct {
@@ -120,12 +147,14 @@ type JoinRoomResponse struct {
 }
 
 type CheckRoomResponse struct {
-	Exists      bool   `json:"exists"`
-	HostName    string `json:"host_name,omitempty"`
-	Platform    string `json:"platform,omitempty"`
-	VideoID     string `json:"video_id,omitempty"`
-	Title       string `json:"title,omitempty"`
-	MemberCount int    `json:"member_count,omitempty"`
+	Exists           bool   `json:"exists"`
+	HostName         string `json:"host_name,omitempty"`
+	Platform         string `json:"platform,omitempty"`
+	VideoID          string `json:"video_id,omitempty"`
+	Title            string `json:"title,omitempty"`
+	MemberCount      int    `json:"member_count,omitempty"`
+	HostOnline       bool   `json:"host_online,omitempty"`
+	HostReconnecting bool   `json:"host_reconnecting,omitempty"`
 }
 
 type StatusResponse struct {

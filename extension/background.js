@@ -17,6 +17,36 @@ let mySid = null;
 let activeTabId = null;
 let _cachedClientId = null;
 let _pendingTransferCallback = null;
+let _pendingConnectCallback = null;
+let _pendingConnectTimer = null;
+let _pendingCatchUpTabId = null;
+let debugLog = [];
+
+function addDebugLog(event, detail = '') {
+  const line = {
+    at: new Date().toISOString().slice(11, 19),
+    event,
+    detail: String(detail || '').slice(0, 120),
+  };
+  debugLog.unshift(line);
+  debugLog = debugLog.slice(0, 20);
+}
+
+function isRoomJoined() {
+  return currentRoom?.connectionState === 'joined';
+}
+
+function finishPendingConnect(result) {
+  if (_pendingConnectTimer) {
+    clearTimeout(_pendingConnectTimer);
+    _pendingConnectTimer = null;
+  }
+  if (_pendingConnectCallback) {
+    const cb = _pendingConnectCallback;
+    _pendingConnectCallback = null;
+    cb(result);
+  }
+}
 
 function persistCurrentRoom() {
   if (!currentRoom) return;
@@ -51,7 +81,8 @@ async function keepAliveOrReconnect() {
     const storedRoom = await loadStoredRoom();
     if (storedRoom?.roomId && storedRoom?.nickname) {
       activeTabId = storedRoom.activeTabId ?? null;
-      currentRoom = { ...storedRoom, members: storedRoom.members || [], _wasReconnecting: true };
+      currentRoom = { ...storedRoom, members: storedRoom.members || [], connectionState: 'pending', _wasReconnecting: true };
+      addDebugLog('restore_session', storedRoom.roomId);
     }
   }
   if (!currentRoom) {
@@ -88,9 +119,7 @@ chrome.alarms.onAlarm.addListener(alarm => {
   if (alarm.name === KEEPALIVE_ALARM) keepAliveOrReconnect();
 });
 
-loadStoredRoom().then(storedRoom => {
-  if (storedRoom?.roomId && storedRoom?.nickname) startKeepAliveAlarm();
-});
+const roomRestorePromise = keepAliveOrReconnect();
 
 function _generateUUID() {
   return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, c => {
@@ -229,6 +258,10 @@ async function connectWS(roomId, name) {
     console.error('[WT] server permission error:', e);
     wsState = 'disconnected';
     _broadcastStatus('disconnected');
+    finishPendingConnect({ ok: false, error: e.message || 'permission_required' });
+    currentRoom = null; mySid = null; activeTabId = null;
+    clearRoomSession();
+    _broadcastToAllVideoTabs({ type: 'self_left_room' });
     return;
   }
   const wsUrl = s.serverUrl.replace('https://', 'wss://').replace('http://', 'ws://');
@@ -237,9 +270,21 @@ async function connectWS(roomId, name) {
 
   console.log('[WT] Connecting to WS:', wsUrl, 'room:', roomId, 'name:', name);
 
-  ws = new WebSocket(`${wsUrl}/wt/ws?${wsParams.toString()}`);
+  try {
+    ws = new WebSocket(`${wsUrl}/wt/ws?${wsParams.toString()}`);
+  } catch (e) {
+    console.error('[WT] WS create failed:', e);
+    wsState = 'disconnected';
+    _broadcastStatus('disconnected');
+    finishPendingConnect({ ok: false, error: e.message || 'connect_failed' });
+    currentRoom = null; mySid = null; activeTabId = null;
+    clearRoomSession();
+    _broadcastToAllVideoTabs({ type: 'self_left_room' });
+    return;
+  }
 
   ws.onopen = () => {
+    addDebugLog('ws_open', roomId);
     wsState = 'connected';
     const wasReconnecting = currentRoom?._wasReconnecting || false;
     reconnectAttempts = 0;
@@ -280,7 +325,9 @@ async function connectWS(roomId, name) {
 
   ws.onclose = (e) => {
     console.log('[WT] WS closed, code:', e.code, 'attempts:', reconnectAttempts);
+    addDebugLog('ws_close', `code=${e.code}`);
     wsState = 'disconnected';
+    _pendingCatchUpTabId = null;
 
     if (_pendingTransferCallback) {
       const cb = _pendingTransferCallback;
@@ -291,6 +338,7 @@ async function connectWS(roomId, name) {
     _broadcastStatus('disconnected');
 
     if (e.code === 4000) {
+      finishPendingConnect({ ok: false, error: 'closed' });
       return;
     }
     if (!currentRoom) return;
@@ -301,11 +349,19 @@ async function connectWS(roomId, name) {
       _broadcastStatus('reconnecting');
       const delay = Math.min(1000 * Math.pow(2, reconnectAttempts), 30000);
       console.log('[WT] Will reconnect in', delay, 'ms');
+      addDebugLog('reconnect_scheduled', `attempt=${reconnectAttempts} delay=${delay}`);
       if (currentRoom) currentRoom._wasReconnecting = true;
       reconnectTimer = setTimeout(() => connectWS(roomId, name), delay);
     } else {
       console.log('[WT] Reconnect exhausted, leaving room');
-      _broadcastToAllVideoTabs({ type: 'room_lost', hostName: '(connection timeout)', autoLeave: true });
+      addDebugLog('reconnect_exhausted', `attempts=${reconnectAttempts}`);
+      _broadcastToAllVideoTabs({
+        type: 'room_lost',
+        hostName: currentRoom?.hostName || currentRoom?.nickname || '',
+        reason: 'connection_timeout',
+        autoLeave: true,
+      });
+      finishPendingConnect({ ok: false, error: 'connection_timeout' });
       currentRoom = null; mySid = null; activeTabId = null;
       clearRoomSession();
     }
@@ -324,10 +380,23 @@ function disconnectWS() {
     ws = null;
   }
   wsState = 'disconnected';
+  _pendingCatchUpTabId = null;
   currentRoom = null;
   mySid = null;
   activeTabId = null;
   clearRoomSession();
+}
+
+function closeLostRoomSocket() {
+  if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null; }
+  reconnectAttempts = MAX_RECONNECT;
+  if (ws) {
+    ws.onclose = null;
+    try { ws.close(4001, 'room lost'); } catch (_) {}
+    ws = null;
+  }
+  wsState = 'disconnected';
+  _pendingCatchUpTabId = null;
 }
 
 function wsSend(msg) {
@@ -335,6 +404,8 @@ function wsSend(msg) {
     ws.send(JSON.stringify(msg));
     return true;
   }
+  addDebugLog('send_failed', msg?.type || '');
+  if (isRoomJoined()) _broadcastStatus('reconnecting');
   return false;
 }
 
@@ -346,6 +417,19 @@ function sendToActiveTab(msg) {
   if (activeTabId != null) {
     chrome.tabs.sendMessage(activeTabId, msg).catch(() => {});
   }
+}
+
+function sendToTab(tabId, msg) {
+  if (tabId != null) chrome.tabs.sendMessage(tabId, msg).catch(() => {});
+}
+
+function setActiveRoomTab(tabId) {
+  if (tabId == null || tabId === activeTabId) return;
+  const oldTabId = activeTabId;
+  activeTabId = tabId;
+  persistCurrentRoom();
+  sendToTab(oldTabId, { type: 'lost_active_tab' });
+  sendToTab(activeTabId, { type: 'became_active_tab' });
 }
 
 function _broadcastToAllVideoTabs(msg) {
@@ -363,9 +447,14 @@ function handleServerMessage(msg) {
 
   switch (msg.type) {
     case 'welcome':
+      addDebugLog('welcome', msg.is_host ? 'host' : 'guest');
       mySid = msg.sid;
-      if (currentRoom) currentRoom.isHost = msg.is_host;
+      if (currentRoom) {
+        currentRoom.isHost = msg.is_host;
+        currentRoom.connectionState = 'joined';
+      }
       persistCurrentRoom();
+      finishPendingConnect({ ok: true, isHost: msg.is_host, sid: msg.sid });
       sendToActiveTab({ type: 'room_joined', isHost: msg.is_host, sid: msg.sid });
       if (!msg.is_host && currentRoom?._wasReconnecting) {
         sendToActiveTab({ type: 'reconnect_catch_up_prompt' });
@@ -379,7 +468,9 @@ function handleServerMessage(msg) {
 
     case 'kicked':
       console.log('[WT] Connection kicked:', msg.reason);
+      addDebugLog('kicked', msg.reason || '');
       wsState = 'disconnected';
+      finishPendingConnect({ ok: false, error: msg.reason || 'kicked' });
       currentRoom = null; mySid = null; activeTabId = null;
       clearRoomSession();
       _broadcastToAllVideoTabs({ type: 'ws_status', status: 'disconnected' });
@@ -405,12 +496,32 @@ function handleServerMessage(msg) {
       break;
 
     case 'catch_up_result':
-      sendToActiveTab({
+      sendToTab(_pendingCatchUpTabId ?? activeTabId, {
         type: 'catch_up_result',
         seekTime: msg.seek_time,
         paused: msg.paused,
         videoId: msg.video_id,
         platform: msg.platform,
+      });
+      _pendingCatchUpTabId = null;
+      break;
+
+    case 'catch_up_error':
+      sendToTab(_pendingCatchUpTabId ?? activeTabId, {
+        type: 'catch_up_error',
+        reason: msg.reason || 'host_video_unavailable',
+      });
+      _pendingCatchUpTabId = null;
+      break;
+
+    case 'sync_all_result':
+      sendToActiveTab({ type: 'sync_all_result', count: msg.count || 0 });
+      break;
+
+    case 'sync_all_error':
+      sendToActiveTab({
+        type: 'sync_all_error',
+        reason: msg.reason || 'invalid_host_video',
       });
       break;
 
@@ -442,16 +553,21 @@ function handleServerMessage(msg) {
       break;
 
     case 'host_reconnecting':
+      addDebugLog('host_reconnecting', msg.host_name || '');
       _broadcastToAllVideoTabs({ type: 'host_reconnecting', hostName: msg.host_name });
       break;
 
     case 'host_reconnected':
+      addDebugLog('host_reconnected', msg.host_name || '');
       _broadcastToAllVideoTabs({ type: 'host_reconnected', hostName: msg.host_name });
       break;
 
     case 'room_lost':
-      sendToActiveTab({ type: 'room_lost', hostName: msg.host_name });
-      _broadcastToAllVideoTabs({ type: 'room_dissolved', hostName: msg.host_name });
+      addDebugLog('room_lost', msg.reason || msg.host_name || '');
+      finishPendingConnect({ ok: false, error: 'room_lost' });
+      sendToActiveTab({ type: 'room_lost', hostName: msg.host_name, reason: msg.reason || '' });
+      _broadcastToAllVideoTabs({ type: 'room_dissolved', hostName: msg.host_name, reason: msg.reason || '' });
+      closeLostRoomSocket();
       currentRoom = null; mySid = null; activeTabId = null;
       clearRoomSession();
       break;
@@ -484,6 +600,23 @@ function handleServerMessage(msg) {
         const cb = _pendingTransferCallback;
         _pendingTransferCallback = null;
         cb({ ok: false, error: msg.message });
+      } else {
+        const wasEstablished = currentRoom?.connectionState === 'joined' || currentRoom?._wasReconnecting;
+        finishPendingConnect({ ok: false, error: msg.message || 'connect_failed' });
+        addDebugLog('server_error', msg.message || '');
+        if (wasEstablished) {
+          _broadcastToAllVideoTabs({
+            type: 'room_lost',
+            hostName: currentRoom?.hostName || currentRoom?.nickname || '',
+            reason: 'room_unavailable',
+            autoLeave: true,
+          });
+        } else {
+          _broadcastToAllVideoTabs({ type: 'self_left_room' });
+        }
+        closeLostRoomSocket();
+        currentRoom = null; mySid = null; activeTabId = null;
+        clearRoomSession();
       }
       break;
 
@@ -527,6 +660,7 @@ function handleServerMessage(msg) {
       break;
 
     case 'member_list':
+      addDebugLog('member_list', `${msg.count || 0} members`);
       if (currentRoom) {
         currentRoom.members = msg.members;
         persistCurrentRoom();
@@ -557,6 +691,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         members: [],
         hostSearching: msg.hostSearching || false,
         serverRegion: msg.serverRegion || null,
+        connectionState: 'pending',
         _wasReconnecting: false,
       };
       if (!msg.isHost && msg.joinToken) {
@@ -572,9 +707,18 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       reconnectAttempts = 0;
       persistCurrentRoom();
       startKeepAliveAlarm();
+      finishPendingConnect({ ok: false, error: 'replaced_by_new_connect' });
+      _pendingConnectCallback = sendResponse;
+      _pendingConnectTimer = setTimeout(() => {
+        finishPendingConnect({ ok: false, error: 'connection_timeout' });
+        if (currentRoom?.connectionState !== 'joined') {
+          currentRoom = null; mySid = null; activeTabId = null;
+          clearRoomSession();
+          _broadcastToAllVideoTabs({ type: 'self_left_room' });
+        }
+      }, 20000);
       connectWS(msg.roomId, msg.nickname);
-      sendResponse({ ok: true });
-      break;
+      return true;
 
     case 'leave_room':
       disconnectWS();
@@ -583,43 +727,69 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       break;
 
     case 'get_status':
-      sendResponse({ wsState, currentRoom, mySid, activeTabId });
-      break;
+      roomRestorePromise.finally(() => {
+        sendResponse({ wsState, currentRoom, mySid, activeTabId, debugLog });
+      });
+      return true;
 
     case 'check_is_active_tab':
-      sendResponse({
-        isActiveTab: sender.tab?.id === activeTabId,
-        inRoom: !!currentRoom,
-        isHost: currentRoom?.isHost || false,
-        hostSearching: currentRoom?.hostSearching || false,
+      roomRestorePromise.finally(() => {
+        sendResponse({
+          isActiveTab: sender.tab?.id === activeTabId,
+          inRoom: isRoomJoined(),
+          isHost: isRoomJoined() ? currentRoom?.isHost || false : false,
+          hostSearching: currentRoom?.hostSearching || false,
+        });
       });
-      break;
+      return true;
 
     case 'sync_action':
-      if (currentRoom) {
+      if (isRoomJoined()) {
         const seekTime = msg.seekTime || 0;
         if (isFinite(seekTime) && seekTime >= 0) {
-          wsSend({ type: 'sync_action', action: msg.action, seek_time: seekTime });
+          sendResponse({ ok: wsSend({ type: 'sync_action', action: msg.action, seek_time: seekTime }) });
+          break;
         }
       }
+      sendResponse({ ok: false, error: 'not_connected' });
       break;
 
     case 'veto':
-      wsSend({ type: 'veto' });
+      sendResponse({ ok: isRoomJoined() && wsSend({ type: 'veto' }) });
       break;
 
     case 'catch_up':
-      wsSend({ type: 'catch_up' });
+      if (!isRoomJoined()) {
+        sendResponse({ ok: false, error: 'not_connected' });
+        break;
+      }
+      if (currentRoom?.hostSearching) {
+        sendResponse({ ok: false, error: 'host_video_unavailable' });
+        break;
+      }
+      _pendingCatchUpTabId = msg.tabId || sender.tab?.id || activeTabId;
+      if (_pendingCatchUpTabId == null) {
+        sendResponse({ ok: false, error: 'no_target_tab' });
+        break;
+      }
+      if (!currentRoom?.isHost) setActiveRoomTab(_pendingCatchUpTabId);
+      if (!wsSend({ type: 'catch_up' })) {
+        _pendingCatchUpTabId = null;
+        sendResponse({ ok: false, error: 'not_connected' });
+        break;
+      }
+      addDebugLog('catch_up_sent', `tab=${_pendingCatchUpTabId}`);
+      sendResponse({ ok: true });
       break;
 
     case 'position_update':
-      if (currentRoom?.isHost) {
+      if (isRoomJoined() && currentRoom?.isHost) {
         wsSend({ type: 'position_update', seek_time: msg.currentTime, action: msg.paused ? 'paused' : 'playing' });
       }
       break;
 
     case 'video_changed':
-      if (currentRoom?.isHost) {
+      if (isRoomJoined() && currentRoom?.isHost) {
         if (msg.videoId) {
           currentRoom.hostSearching = false;
           currentRoom.videoId = msg.videoId;
@@ -642,12 +812,12 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       break;
 
     case 'veto_config':
-      wsSend({ type: 'veto_config', action: msg.enabled ? 'true' : 'false', seek_time: msg.seconds });
+      if (isRoomJoined()) wsSend({ type: 'veto_config', action: msg.enabled ? 'true' : 'false', seek_time: msg.seconds });
       if (currentRoom) { currentRoom.vetoEnabled = msg.enabled; currentRoom.vetoSeconds = msg.seconds; persistCurrentRoom(); }
       break;
 
     case 'guest_control_config':
-      wsSend({ type: 'guest_control_config', allowed: msg.allowed });
+      if (isRoomJoined()) wsSend({ type: 'guest_control_config', allowed: msg.allowed });
       if (currentRoom) { currentRoom.guestControlAllowed = msg.allowed; persistCurrentRoom(); }
       break;
 
@@ -709,7 +879,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       return true; // async
 
     case 'take_active_tab': {
-      if (!currentRoom?.isHost) { sendResponse({ ok: false, error: 'not_host' }); break; }
+      if (!isRoomJoined() || !currentRoom?.isHost) { sendResponse({ ok: false, error: 'not_host' }); break; }
       const newTabId = sender.tab?.id || null;
       const oldTabId = activeTabId;
       if (oldTabId && oldTabId !== newTabId) {
@@ -722,11 +892,34 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     }
 
     case 'sync_all':
-      wsSend({ type: 'sync_all' });
+      if (!isRoomJoined() || !currentRoom?.isHost) {
+        sendResponse({ ok: false, error: 'not_host' });
+        break;
+      }
+      if (!msg.videoId || !['youtube', 'bilibili'].includes(msg.platform) ||
+          !Number.isFinite(msg.currentTime) || msg.currentTime < 0) {
+        sendResponse({ ok: false, error: 'invalid_host_video' });
+        break;
+      }
+      setActiveRoomTab(msg.tabId || sender.tab?.id || activeTabId);
+      currentRoom.videoId = msg.videoId;
+      currentRoom.platform = msg.platform;
+      currentRoom.hostSearching = false;
+      persistCurrentRoom();
+      sendResponse({
+        ok: wsSend({
+          type: 'sync_all',
+          video_id: msg.videoId,
+          platform: msg.platform,
+          is_live: !!msg.isLive,
+          seek_time: msg.currentTime,
+          action: msg.paused ? 'paused' : 'playing',
+        }),
+      });
       break;
 
     case 'transfer_host': {
-      if (!currentRoom?.isHost) { sendResponse({ ok: false, error: 'not_host' }); break; }
+      if (!isRoomJoined() || !currentRoom?.isHost) { sendResponse({ ok: false, error: 'not_host' }); break; }
       const sent = wsSend({ type: 'transfer_host', target_sid: msg.targetSid });
       if (!sent) { sendResponse({ ok: false, error: 'not_connected' }); break; }
       _pendingTransferCallback = sendResponse;

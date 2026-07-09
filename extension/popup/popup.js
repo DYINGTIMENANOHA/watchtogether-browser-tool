@@ -15,6 +15,7 @@ function setStatusDot(state) {
   $('status-dot').className = 'status-dot ' + (state === 'connected' ? '' : state);
   if (state === 'connected')       $('status-text').textContent = t('status_syncing');
   else if (state === 'connecting') $('status-text').textContent = t('status_connecting');
+  else if (state === 'host_reconnecting') $('status-text').textContent = t('status_host_reconnecting');
   else                             $('status-text').textContent = t('status_reconnecting');
 }
 
@@ -93,6 +94,18 @@ async function getNickname() {
   return new Promise(r => chrome.runtime.sendMessage({ type: 'get_nickname' }, res => r(res?.nickname || '')));
 }
 
+async function sendRuntimeMessage(msg) {
+  return new Promise(resolve => {
+    chrome.runtime.sendMessage(msg, res => {
+      if (chrome.runtime.lastError) {
+        resolve({ ok: false, error: chrome.runtime.lastError.message });
+        return;
+      }
+      resolve(res);
+    });
+  });
+}
+
 async function getClientId() {
   return new Promise(r => chrome.runtime.sendMessage({ type: 'get_client_id' }, res => r(res?.clientId || '')));
 }
@@ -142,10 +155,44 @@ function renderMemberList(members, listId, countId) {
   count.textContent = `${members.length}/5`;
   list.innerHTML = members.map(m =>
     `<div class="member-item${m.is_host ? ' host' : ''}">
-      <span class="member-dot"></span>
-      <span class="member-name">${escHtml(m.name)}${m.is_host ? ' H' : ''}</span>
+      <span class="member-dot ${memberDotClass(m)}"></span>
+      <span class="member-name">${escHtml(m.name)}${m.is_host ? ' H' : ''}${memberStatusLabel(m)}</span>
     </div>`
   ).join('');
+}
+
+function memberDotClass(member) {
+  const status = member?.status || 'online';
+  if (status === 'reconnecting') return 'reconnecting';
+  if (status === 'offline') return 'offline';
+  return member?.is_host ? 'host' : '';
+}
+
+function memberStatusLabel(member) {
+  const status = member?.status || 'online';
+  if (status === 'online') return '';
+  const key = status === 'reconnecting' ? 'member_status_reconnecting' : 'member_status_offline';
+  return ` <span class="member-status">${t(key)}</span>`;
+}
+
+function renderDebugBox(room) {
+  const lines = [
+    `room=${room?.roomId || '-'} role=${room?.isHost ? 'host' : 'guest'}`,
+    `video=${room?.platform || '-'}:${room?.videoId || '-'}`,
+    ...currentDebugLog.slice(0, 6).map(l => `${l.at} ${l.event}${l.detail ? ' ' + l.detail : ''}`),
+  ];
+  return `
+    <div class="debug-box">
+      <div class="debug-title">${t('debug_title')}</div>
+      ${lines.map(line => `<div class="debug-line">${escHtml(line)}</div>`).join('')}
+    </div>`;
+}
+
+function refreshDebugBox(panelId, room) {
+  const panel = $(panelId);
+  if (!panel) return;
+  panel.querySelector('.debug-box')?.remove();
+  panel.insertAdjacentHTML('beforeend', renderDebugBox(room));
 }
 
 function escHtml(s) {
@@ -171,6 +218,7 @@ async function checkFirstRun() {
 
 let videoInfo = null;
 let currentRoomData = null;
+let currentDebugLog = [];
 let pendingJoinRegion = '';
 let joinCooldownTimer = null;
 
@@ -219,8 +267,9 @@ async function init() {
   videoInfo = await getCurrentVideoInfo();
 
   chrome.runtime.sendMessage({ type: 'get_status' }, res => {
-    if (res?.currentRoom) {
+    if (res?.currentRoom?.connectionState === 'joined') {
       currentRoomData = res.currentRoom;
+      currentDebugLog = res.debugLog || [];
       showRoomView(res.currentRoom, res.wsState);
     } else {
       showView('idle');
@@ -262,6 +311,7 @@ async function showRoomView(room, wsState) {
     $('toggle-guest-control').checked = settings.allowGuestControl;
 
     renderMemberList(room.members || [], 'member-list', 'member-count');
+    refreshDebugBox('host-panel', room);
     const syncAllBtn = $('btn-sync-all');
     if (syncAllBtn) syncAllBtn.style.display = room.videoId ? '' : 'none';
     startMemberRefresh();
@@ -270,6 +320,7 @@ async function showRoomView(room, wsState) {
     $('guest-panel').style.display = '';
     $('host-name-display').textContent = room.hostName || '-';
     renderMemberList(room.members || [], 'guest-member-list', 'guest-member-count');
+    refreshDebugBox('guest-panel', room);
     startMemberRefresh();
   }
 }
@@ -284,7 +335,7 @@ function startMemberRefresh() {
   connectionCheckTimer = setTimeout(() => {
     chrome.runtime.sendMessage({ type: 'get_status' }, res => {
       if (res?.wsState === 'connected') return;
-      if (!res?.currentRoom) return;
+      if (res?.currentRoom?.connectionState !== 'joined') return;
       setStatusDot('disconnected');
       const el = $('status-text');
       if (el) el.textContent = t('conn_fail_retry');
@@ -293,11 +344,19 @@ function startMemberRefresh() {
 
   memberRefreshTimer = setInterval(() => {
     chrome.runtime.sendMessage({ type: 'get_status' }, res => {
-      if (!res?.currentRoom) return;
+      if (res?.currentRoom?.connectionState !== 'joined') return;
+      currentDebugLog = res.debugLog || [];
       if (res.currentRoom.isHost) {
         renderMemberList(res.currentRoom.members || [], 'member-list', 'member-count');
+        refreshDebugBox('host-panel', res.currentRoom);
       } else {
-        renderMemberList(res.currentRoom.members || [], 'guest-member-list', 'guest-member-count');
+        const members = res.currentRoom.members || [];
+        renderMemberList(members, 'guest-member-list', 'guest-member-count');
+        refreshDebugBox('guest-panel', res.currentRoom);
+        if (members.some(m => m.is_host && m.status === 'reconnecting')) {
+          setStatusDot('host_reconnecting');
+          return;
+        }
       }
       setStatusDot(res.wsState === 'connected' ? 'connected' : 'connecting');
     });
@@ -318,7 +377,7 @@ $('firstrun-nick').addEventListener('keydown', e => { if (e.key === 'Enter') $('
 
 $('btn-create').addEventListener('click', async () => {
   if (!videoInfo) return;
-  $('btn-create').disabled = true; $('btn-create').textContent = t('creating'); setError('');
+  $('btn-create').disabled = true; $('btn-create').textContent = t('join_step_checking'); setError('');
   try {
     const [nickname, clientId, serverRegion] = await Promise.all([getNickname(), getClientId(), getServerRegion()]);
     const res = await apiPost('/room/create', {
@@ -331,7 +390,8 @@ $('btn-create').addEventListener('click', async () => {
       paused: videoInfo.paused,
       is_live: videoInfo.isLive,
     });
-    chrome.runtime.sendMessage({
+    $('btn-create').textContent = t('join_step_connecting');
+    const connectRes = await sendRuntimeMessage({
       type: 'connect_room',
       roomId: res.room_id,
       token: res.token,
@@ -342,8 +402,10 @@ $('btn-create').addEventListener('click', async () => {
       tabId: videoInfo.tabId,
       serverRegion,
     });
-    const roomObj = { isHost: true, token: res.token, roomId: res.room_id, videoId: videoInfo.videoId, platform: videoInfo.platform, members: [], serverRegion };
-    showRoomView(roomObj, 'connecting');
+    if (!connectRes?.ok) throw new Error(connectRes?.error || t('err_create_failed'));
+    $('btn-create').textContent = t('join_step_syncing');
+    const roomObj = { isHost: true, token: res.token, roomId: res.room_id, videoId: videoInfo.videoId, platform: videoInfo.platform, members: [], serverRegion, connectionState: 'joined' };
+    showRoomView(roomObj, 'connected');
   } catch (e) {
     setError(e.message || t('err_create_failed'));
   } finally {
@@ -355,38 +417,40 @@ $('btn-join').addEventListener('click', async () => {
   const parsedCode = parseInviteCode($('input-token').value);
   const token = parsedCode.token;
   if (!token) { setError(t('err_enter_code')); return; }
-  setError(''); $('btn-join').disabled = true; $('btn-join').textContent = t('joining');
+  setError(''); $('btn-join').disabled = true; $('btn-join').textContent = t('join_step_checking');
   try {
     const [nickname, clientId, serverRegion] = await Promise.all([getNickname(), getClientId(), getServerRegion()]);
     const joinRegion = parsedCode.serverRegion || pendingJoinRegion || serverRegion;
     pendingJoinRegion = '';
     const info = await apiPost('/room/join', { token, guest_name: nickname, client_id: clientId }, joinRegion);
-    chrome.tabs.query({ active: true, currentWindow: true }, tabs => {
-      const tab = tabs[0];
-      const tabId = tab?.id;
-      chrome.runtime.sendMessage({
-        type: 'connect_room',
-        roomId: info.room_id,
-        token: null,
-        isHost: false,
-        hostName: info.host_name,
-        videoId: info.video_id,
-        platform: info.platform,
-        nickname,
-        hostSearching: info.host_searching || false,
-        tabId,
-        joinToken: token,
-        title: info.title || '',
-        serverRegion: joinRegion,
-      });
-      showRoomView({ isHost: false, roomId: info.room_id, hostName: info.host_name, platform: info.platform, members: [], serverRegion: joinRegion }, 'connecting');
-      if (tab && info.video_id && !info.host_searching) {
-        const url = info.platform === 'youtube'
-          ? `https://www.youtube.com/watch?v=${info.video_id}`
-          : `https://www.bilibili.com/video/${info.video_id}/`;
-        if (!(tab.url || '').includes(info.video_id)) chrome.tabs.update(tab.id, { url });
-      }
+    const tab = await new Promise(resolve => {
+      chrome.tabs.query({ active: true, currentWindow: true }, tabs => resolve(tabs[0]));
     });
+    $('btn-join').textContent = t('join_step_connecting');
+    const connectRes = await sendRuntimeMessage({
+      type: 'connect_room',
+      roomId: info.room_id,
+      token: null,
+      isHost: false,
+      hostName: info.host_name,
+      videoId: info.video_id,
+      platform: info.platform,
+      nickname,
+      hostSearching: info.host_searching || false,
+      tabId: tab?.id,
+      joinToken: token,
+      title: info.title || '',
+      serverRegion: joinRegion,
+    });
+    if (!connectRes?.ok) throw new Error(connectRes?.error || t('err_join_failed'));
+    $('btn-join').textContent = t('join_step_syncing');
+    showRoomView({ isHost: false, roomId: info.room_id, hostName: info.host_name, platform: info.platform, members: [], serverRegion: joinRegion, connectionState: 'joined' }, 'connected');
+    if (tab && info.video_id && !info.host_searching) {
+      const url = info.platform === 'youtube'
+        ? `https://www.youtube.com/watch?v=${info.video_id}`
+        : `https://www.bilibili.com/video/${info.video_id}/`;
+      if (!(tab.url || '').includes(info.video_id)) chrome.tabs.update(tab.id, { url });
+    }
   } catch (e) {
     const msg = e.message || '';
     if (isRateLimitError(msg)) {
@@ -423,10 +487,41 @@ $('btn-leave').addEventListener('click', () => {
   });
 });
 
-$('btn-catch-up').addEventListener('click', () => chrome.runtime.sendMessage({ type: 'catch_up' }));
+$('btn-catch-up').addEventListener('click', async () => {
+  const tabs = await new Promise(resolve => chrome.tabs.query({ active: true, currentWindow: true }, resolve));
+  const tab = tabs[0];
+  const url = tab?.url || '';
+  if (!tab || (!url.includes('youtube.com') && !url.includes('bilibili.com'))) {
+    setError(t('sync_no_target_tab'));
+    return;
+  }
+  chrome.runtime.sendMessage({ type: 'catch_up', tabId: tab.id }, res => {
+    if (!res?.ok) {
+      const key = res?.error === 'host_video_unavailable'
+        ? 'sync_host_video_unavailable'
+        : 'sync_send_failed';
+      setError(t(key));
+    }
+  });
+});
 
-$('btn-sync-all').addEventListener('click', () => {
-  chrome.runtime.sendMessage({ type: 'sync_all' });
+$('btn-sync-all').addEventListener('click', async () => {
+  const current = await getCurrentVideoInfo();
+  if (!current) {
+    setError(t('sync_invalid_host_video'));
+    return;
+  }
+  chrome.runtime.sendMessage({
+    type: 'sync_all',
+    videoId: current.videoId,
+    platform: current.platform,
+    currentTime: current.currentTime,
+    paused: current.paused,
+    isLive: current.isLive,
+    tabId: current.tabId,
+  }, res => {
+    if (!res?.ok) setError(t('sync_send_failed'));
+  });
   const btn = $('btn-sync-all');
   if (btn) { btn.disabled = true; setTimeout(() => { btn.disabled = false; }, 3000); }
 });
@@ -501,15 +596,15 @@ async function renderHistory() {
     fetch(`${resolveServerUrlForRegion(entry.serverRegion, entry.serverUrl) || defaultServerUrl}/wt/room/check?token=${encodeURIComponent(entry.token)}`,
       { headers, signal: AbortSignal.timeout(5000) })
       .then(r => r.json())
-      .then(data => ({ i, exists: !!data.exists }))
-      .catch(() => ({ i, exists: false }))
+      .then(data => ({ i, status: data.host_reconnecting ? 'reconnecting' : (data.exists && data.host_online ? 'online' : 'offline') }))
+      .catch(() => ({ i, status: 'offline' }))
   );
   const results = await Promise.all(checks);
-  results.forEach(({ i, exists }) => {
+  results.forEach(({ i, status }) => {
     const dot  = $(`hd-${i}`);
     const join = $(`hjoin-${i}`);
-    if (dot)  { dot.className  = `history-dot ${exists ? 'online' : 'offline'}`; dot.title = t(exists ? 'history_online' : 'history_offline'); }
-    if (join) { if (!exists) join.classList.add('offline'); }
+    if (dot)  { dot.className  = `history-dot ${status}`; dot.title = t(status === 'reconnecting' ? 'history_reconnecting' : (status === 'online' ? 'history_online' : 'history_offline')); }
+    if (join) { if (status === 'offline') join.classList.add('offline'); else join.classList.remove('offline'); }
   });
 }
 

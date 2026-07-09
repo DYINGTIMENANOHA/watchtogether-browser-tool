@@ -34,13 +34,18 @@ func cleanExpiredRooms(cfg Config) {
 	cleaned := 0
 
 	for _, room := range rooms {
-		room.RLock()
-		lastActivity := room.LastActivity
-		memberCount := len(room.Members)
+		room.Lock()
 		roomID := room.RoomID
-		room.RUnlock()
+		shouldDelete := !room.Closed &&
+			!room.HostReconnecting &&
+			len(room.Members) == 0 &&
+			now.Sub(room.LastActivity) > time.Duration(cfg.RoomTTLMinutes)*time.Minute
+		if shouldDelete {
+			room.Closed = true
+		}
+		room.Unlock()
 
-		if memberCount == 0 && now.Sub(lastActivity) > time.Duration(cfg.RoomTTLMinutes)*time.Minute {
+		if shouldDelete {
 			globalState.DeleteRoom(roomID)
 			cleaned++
 			log.Debug().Str("room_id", roomID).Msg("cleaned empty expired room")

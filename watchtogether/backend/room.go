@@ -145,7 +145,7 @@ func handleJoinRoom(cfg Config) http.HandlerFunc {
 		}
 
 		room.RLock()
-		if time.Now().After(room.TokenExpires) {
+		if time.Now().After(room.TokenExpires) || room.Closed {
 			room.RUnlock()
 			globalState.RecordTokenFail(ip, cfg.TokenFailMax, cfg.TokenBanMinutes)
 			http.Error(w, `{"error":"token expired"}`, http.StatusUnauthorized)
@@ -173,6 +173,7 @@ func handleJoinRoom(cfg Config) http.HandlerFunc {
 
 		room.Lock()
 		room.LastActivity = time.Now()
+		room.TokenExpires = room.LastActivity.Add(time.Duration(cfg.RoomTTLMinutes) * time.Minute)
 		room.Unlock()
 
 		globalState.RecordTokenSuccess(ip)
@@ -225,18 +226,20 @@ func handleCheckRoom() http.HandlerFunc {
 		}
 		room.RLock()
 		expired := time.Now().After(room.TokenExpires)
-		if expired {
+		if expired || room.Closed {
 			room.RUnlock()
 			json.NewEncoder(w).Encode(CheckRoomResponse{Exists: false})
 			return
 		}
 		resp := CheckRoomResponse{
-			Exists:      true,
-			HostName:    room.HostName,
-			Platform:    room.Platform,
-			VideoID:     room.VideoID,
-			Title:       room.Title,
-			MemberCount: len(room.Members),
+			Exists:           true,
+			HostName:         room.HostName,
+			Platform:         room.Platform,
+			VideoID:          room.VideoID,
+			Title:            room.Title,
+			MemberCount:      len(room.Members),
+			HostOnline:       room.HostSID != "",
+			HostReconnecting: room.HostReconnecting,
 		}
 		room.RUnlock()
 		json.NewEncoder(w).Encode(resp)

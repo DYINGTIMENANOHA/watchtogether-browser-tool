@@ -14,7 +14,8 @@ import (
 )
 
 const (
-	HostReconnectWindow = 15 * time.Second
+	HostReconnectWindow = 3 * time.Minute
+	HeartbeatInterval   = 15 * time.Second
 )
 
 type msgRateTracker struct {
@@ -66,19 +67,31 @@ func memberListPayload(room *Room) []map[string]any {
 	list := make([]map[string]any, 0, len(room.Members))
 	for sid, m := range room.Members {
 		list = append(list, map[string]any{
-			"sid":     sid,
-			"name":    m.Name,
-			"is_host": sid == room.HostSID,
+			"sid":          sid,
+			"name":         m.Name,
+			"is_host":      sid == room.HostSID,
+			"status":       "online",
+			"last_seen_ms": m.LastSeen.UnixMilli(),
+		})
+	}
+	if room.HostReconnecting && room.HostSID == "" && room.HostName != "" {
+		list = append(list, map[string]any{
+			"sid":          "host_reconnecting",
+			"name":         room.HostName,
+			"is_host":      true,
+			"status":       "reconnecting",
+			"last_seen_ms": room.LastActivity.UnixMilli(),
 		})
 	}
 	return list
 }
 
 func broadcastMemberList(room *Room) {
+	members := memberListPayload(room)
 	room.Broadcast(map[string]any{
 		"type":    "member_list",
-		"members": memberListPayload(room),
-		"count":   len(room.Members),
+		"members": members,
+		"count":   len(members),
 	}, "")
 }
 
@@ -148,10 +161,17 @@ func handleWS(cfg Config) http.HandlerFunc {
 			ClientID: clientID,
 			Name:     hello.Name,
 			Conn:     conn,
+			LastSeen: time.Now(),
 		}
 
 		room.Lock()
-		isHostReconnect := room.HostReconnecting && room.HostClientID == clientID
+		if room.Closed {
+			room.Unlock()
+			_ = conn.WriteJSON(map[string]any{"type": "error", "message": "room not found"})
+			return
+		}
+		isHostReconnect := room.HostClientID == clientID &&
+			(room.HostReconnecting || room.HostSID != "")
 		isFirstMember := room.HostSID == "" && !room.HostReconnecting
 
 		if !isFirstMember && !isHostReconnect {
@@ -183,9 +203,11 @@ func handleWS(cfg Config) http.HandlerFunc {
 		if isFirstMember {
 			room.HostSID = sid
 			room.HostClientID = clientID
+			room.HostName = hello.Name
 			isHost = true
 		} else if isHostReconnect {
 			room.HostSID = sid
+			room.HostName = hello.Name
 			isHost = true
 			if room.HostReconnectTimer != nil {
 				room.HostReconnectTimer.Stop()
@@ -196,6 +218,7 @@ func handleWS(cfg Config) http.HandlerFunc {
 		}
 
 		room.LastActivity = time.Now()
+		room.TokenExpires = room.LastActivity.Add(time.Duration(cfg.RoomTTLMinutes) * time.Minute)
 		room.Unlock()
 
 		_ = member.Send(map[string]any{
@@ -228,18 +251,25 @@ func handleWS(cfg Config) http.HandlerFunc {
 		UpdateGauges()
 
 		rateTracker := &msgRateTracker{}
-		heartbeatTicker := time.NewTicker(30 * time.Second)
+		heartbeatTicker := time.NewTicker(HeartbeatInterval)
 		defer heartbeatTicker.Stop()
 
 		go func() {
 			for range heartbeatTicker.C {
+				if err := member.Ping(); err != nil {
+					return
+				}
 				if err := member.Send(map[string]any{"type": "ping"}); err != nil {
 					return
 				}
 			}
 		}()
 
-		conn.SetReadDeadline(time.Now().Add(time.Duration(cfg.HeartbeatTimeout) * time.Second))
+		heartbeatTimeout := time.Duration(cfg.HeartbeatTimeout) * time.Second
+		conn.SetReadDeadline(time.Now().Add(heartbeatTimeout))
+		conn.SetPongHandler(func(string) error {
+			return conn.SetReadDeadline(time.Now().Add(heartbeatTimeout))
+		})
 		deliberateLeave := false
 
 		for {
@@ -247,7 +277,7 @@ func handleWS(cfg Config) http.HandlerFunc {
 			if err := conn.ReadJSON(&msg); err != nil {
 				break
 			}
-			conn.SetReadDeadline(time.Now().Add(time.Duration(cfg.HeartbeatTimeout) * time.Second))
+			conn.SetReadDeadline(time.Now().Add(heartbeatTimeout))
 
 			if !rateTracker.Allow(cfg.WSMsgPerSec) {
 				continue
@@ -255,6 +285,8 @@ func handleWS(cfg Config) http.HandlerFunc {
 
 			room.Lock()
 			room.LastActivity = time.Now()
+			room.TokenExpires = room.LastActivity.Add(time.Duration(cfg.RoomTTLMinutes) * time.Minute)
+			member.LastSeen = room.LastActivity
 
 			switch msg.Type {
 			case "pong", "heartbeat":
@@ -310,6 +342,20 @@ func handleWS(cfg Config) http.HandlerFunc {
 
 			case "sync_all":
 				if sid == room.HostSID {
+					if msg.VideoID == "" || (msg.Platform != "youtube" && msg.Platform != "bilibili") ||
+						!validateSeekTime(msg.SeekTime) {
+						_ = member.Send(map[string]any{
+							"type":   "sync_all_error",
+							"reason": "invalid_host_video",
+						})
+						break
+					}
+					room.VideoID = msg.VideoID
+					room.Platform = msg.Platform
+					room.IsLive = msg.IsLive
+					room.CurrentTime = msg.SeekTime
+					room.Paused = msg.Action == "paused"
+					room.HostSearching = false
 					notifyMsg := map[string]any{
 						"type":      "host_switched",
 						"video_id":  room.VideoID,
@@ -325,6 +371,10 @@ func handleWS(cfg Config) http.HandlerFunc {
 							_ = m.Send(notifyMsg)
 						}
 					}
+					_ = member.Send(map[string]any{
+						"type":  "sync_all_result",
+						"count": len(room.Members) - 1,
+					})
 					log.Info().Str("room_id", room.RoomID).Msg("host sent sync_all")
 				}
 
@@ -407,9 +457,14 @@ func handleWS(cfg Config) http.HandlerFunc {
 		wasHost := room.HostSID == sid
 
 		if wasHost {
-			if deliberateLeave || len(room.Members) == 0 {
+			if deliberateLeave {
+				room.Closed = true
 				for _, m := range room.Members {
-					_ = m.Send(map[string]any{"type": "room_lost", "host_name": hello.Name})
+					_ = m.Send(map[string]any{
+						"type":      "room_lost",
+						"host_name": hello.Name,
+						"reason":    "host_left",
+					})
 				}
 				room.Unlock()
 				globalState.DeleteRoom(roomID)
@@ -417,6 +472,7 @@ func handleWS(cfg Config) http.HandlerFunc {
 			} else {
 				room.HostSID = ""
 				room.HostReconnecting = true
+				room.LastActivity = time.Now()
 				hostName := hello.Name
 
 				for _, m := range room.Members {
@@ -425,16 +481,23 @@ func handleWS(cfg Config) http.HandlerFunc {
 						"host_name": hostName,
 					})
 				}
+				broadcastMemberList(room)
 
 				roomCopy := room
 				room.HostReconnectTimer = time.AfterFunc(HostReconnectWindow, func() {
 					roomCopy.Lock()
-					if !roomCopy.HostReconnecting {
+					if !roomCopy.HostReconnecting || roomCopy.Closed {
 						roomCopy.Unlock()
 						return
 					}
+					roomCopy.HostReconnecting = false
+					roomCopy.Closed = true
 					for _, m := range roomCopy.Members {
-						_ = m.Send(map[string]any{"type": "room_lost", "host_name": hostName})
+						_ = m.Send(map[string]any{
+							"type":      "room_lost",
+							"host_name": hostName,
+							"reason":    "host_timeout",
+						})
 					}
 					roomCopy.Unlock()
 					globalState.DeleteRoom(roomID)
@@ -572,6 +635,14 @@ func handleVeto(room *Room, member *Member) {
 }
 
 func handleCatchUp(room *Room, member *Member) {
+	if room.HostSearching || room.VideoID == "" ||
+		(room.Platform != "youtube" && room.Platform != "bilibili") {
+		_ = member.Send(map[string]any{
+			"type":   "catch_up_error",
+			"reason": "host_video_unavailable",
+		})
+		return
+	}
 	_ = member.Send(map[string]any{
 		"type":      "catch_up_result",
 		"seek_time": room.CurrentTime,

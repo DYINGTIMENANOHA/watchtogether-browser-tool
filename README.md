@@ -116,7 +116,7 @@ include /opt/watchtogether-extension/watchtogether/nginx_snippet.conf;
 | `TOKEN_BAN_MINUTES` | `10` | IP ban duration |
 | `RATE_LIMIT_PER_MIN` | `5` | Room creations per IP per minute |
 | `WS_MAX_PER_IP` | `20` | Concurrent WS connections per IP |
-| `HEARTBEAT_TIMEOUT` | `60` | WS heartbeat timeout (seconds) |
+| `HEARTBEAT_TIMEOUT` | `45` | WS heartbeat timeout (seconds) |
 | `LOG_PRETTY` | `0` | Set to `1` for human-readable console logs |
 | `LOG_DEBUG` | `0` | Set to `1` for debug-level logging |
 

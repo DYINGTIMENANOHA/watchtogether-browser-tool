@@ -35,7 +35,7 @@ func LoadConfig() Config {
 		RateLimitPerMin:  getEnvInt("RATE_LIMIT_PER_MIN", 5),
 		WSMaxPerIP:       getEnvInt("WS_MAX_PER_IP", 20),
 		WSMsgPerSec:      getEnvInt("WS_MSG_PER_SEC", 10),
-		HeartbeatTimeout: getEnvInt("HEARTBEAT_TIMEOUT", 120),
+		HeartbeatTimeout: getEnvInt("HEARTBEAT_TIMEOUT", 45),
 		PromPort:         getEnv("PROM_PORT", "9091"),
 		AllowedOrigins:   getEnvList("ALLOWED_ORIGINS"),
 		ClientToken:      getEnv("CLIENT_TOKEN", ""),

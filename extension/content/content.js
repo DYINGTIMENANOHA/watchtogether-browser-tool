@@ -19,6 +19,7 @@ let currentToken = '';
 let currentVideoId = '';
 let currentPlatform = '';
 let currentServerRegion = '';
+let currentDebugLog = [];
 
 let shadowHost = null;
 let shadowRoot = null;
@@ -30,6 +31,7 @@ let bubbleHidden = false;
 let vetoBanner = null, vetoTimerId = null;
 let switchBanner = null;
 let infoBanner = null, infoTimerId = null;
+let guestVideoMismatchBanner = null;
 let joinCooldownTimer = null;
 
 function isRateLimitError(msg) {
@@ -129,6 +131,11 @@ function getStyles() {
     .wt-member-item{display:flex;align-items:center;gap:6px;padding:3px 0;font-size:12px;color:#ddd;}
     .wt-member-dot{width:6px;height:6px;border-radius:50%;background:#4caf50;flex-shrink:0;}
     .wt-member-dot.host{background:#ff9800;}
+    .wt-member-dot.reconnecting{background:#ff9800;animation:wt-pulse .8s infinite alternate;}
+    .wt-member-dot.offline{background:#666;}
+    .wt-debug{background:#151515;border:1px solid #333;border-radius:6px;padding:6px 8px;margin-top:8px;font-size:10px;color:#888;line-height:1.45;max-height:92px;overflow:auto;}
+    .wt-debug-title{color:#aaa;font-size:10px;margin-bottom:3px;}
+    .wt-debug-line{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
     .wt-btn{width:100%;padding:7px;border:none;border-radius:7px;font-size:13px;font-weight:500;cursor:pointer;margin-top:6px;transition:opacity .15s;}
     .wt-btn:hover{opacity:.85;}
     .wt-btn.primary{background:#4caf50;color:#fff;}
@@ -321,7 +328,7 @@ function renderIdlePanel() {
   panel.querySelector('#wt-create-btn')?.addEventListener('click', () => {
     const btn = panel.querySelector('#wt-create-btn');
     const errEl = panel.querySelector('#wt-create-err');
-    btn.disabled = true; btn.textContent = t('panel_creating');
+    btn.disabled = true; btn.textContent = t('join_step_checking');
     if (errEl) errEl.textContent = '';
 
     chrome.runtime.sendMessage({ type: 'get_nickname' }, r => {
@@ -346,6 +353,7 @@ function renderIdlePanel() {
         currentVideoId = videoId;
         currentPlatform = platform;
         currentServerRegion = data.serverRegion || currentServerRegion;
+        btn.textContent = t('join_step_connecting');
         chrome.runtime.sendMessage({
           type: 'connect_room',
           roomId: data.room_id,
@@ -354,10 +362,17 @@ function renderIdlePanel() {
           videoId, platform, nickname,
           tabId: null,
           serverRegion: currentServerRegion,
+        }, connectRes => {
+          if (!connectRes?.ok) {
+            if (errEl) errEl.textContent = connectRes?.error || t('err_create_failed');
+            btn.disabled = false; btn.textContent = t('panel_create_btn');
+            return;
+          }
+          btn.textContent = t('join_step_syncing');
+          isInRoom = true; isHost = true; isActiveTab = true;
+          panelVisible = false; panel.style.display = 'none';
+          updateBubble();
         });
-        isInRoom = true; isHost = true; isActiveTab = true;
-        panelVisible = false; panel.style.display = 'none';
-        updateBubble();
       });
     });
   });
@@ -371,7 +386,7 @@ function renderIdlePanel() {
     if (!token) { if (errEl) errEl.textContent = t('panel_err_code'); return; }
     if (!nickname) { if (errEl) errEl.textContent = t('panel_err_nick'); return; }
     if (errEl) errEl.textContent = '';
-    btn.disabled = true; btn.textContent = t('panel_joining');
+    btn.disabled = true; btn.textContent = t('join_step_checking');
 
     chrome.runtime.sendMessage({ type: 'api_join_room', token, nickname, serverRegion: parsedCode.serverRegion || inviteRegion || currentServerRegion }, res => {
       if (!res?.ok) {
@@ -386,6 +401,7 @@ function renderIdlePanel() {
       }
       const info = res.data;
       currentServerRegion = parsedCode.serverRegion || inviteRegion || info.serverRegion || currentServerRegion;
+      btn.textContent = t('join_step_connecting');
       chrome.runtime.sendMessage({
         type: 'connect_room',
         roomId: info.room_id,
@@ -399,16 +415,23 @@ function renderIdlePanel() {
         joinToken: token,
         title: info.title || '',
         serverRegion: currentServerRegion,
+      }, connectRes => {
+        if (!connectRes?.ok) {
+          if (errEl) errEl.textContent = connectRes?.error || t('panel_err_failed');
+          btn.disabled = false; btn.textContent = t('panel_join_btn');
+          return;
+        }
+        btn.textContent = t('join_step_syncing');
+        if (hashCode) history.replaceState(null, '', location.pathname + location.search);
+        isInRoom = true; isHost = false; isActiveTab = true;
+        currentHostName = info.host_name;
+        panelVisible = false; panel.style.display = 'none';
+        updateBubble();
+        if (info.video_id && !info.host_searching) {
+          const url = getVideoUrl(info.video_id, info.platform);
+          if (!location.href.includes(info.video_id)) location.href = url;
+        }
       });
-      if (hashCode) history.replaceState(null, '', location.pathname + location.search);
-      isInRoom = true; isHost = false; isActiveTab = true;
-      currentHostName = info.host_name;
-      panelVisible = false; panel.style.display = 'none';
-      updateBubble();
-      if (info.video_id && !info.host_searching) {
-        const url = getVideoUrl(info.video_id, info.platform);
-        if (!location.href.includes(info.video_id)) location.href = url;
-      }
     });
   });
 
@@ -457,10 +480,11 @@ function renderIdlePanelHistory() {
         const dot = panel?.querySelector(`#wt-hd-${i}`);
         const btn = panel?.querySelector(`#wt-hjoin-${i}`);
         if (!dot) return;
-        const exists = !!res?.data?.exists;
-        dot.style.background = exists ? '#4caf50' : '#555';
-        dot.title = t(exists ? 'history_online' : 'history_offline');
-        if (btn && !exists) btn.style.opacity = '0.45';
+        const data = res?.data || {};
+        const status = data.host_reconnecting ? 'reconnecting' : (data.exists && data.host_online ? 'online' : 'offline');
+        dot.style.background = status === 'online' ? '#4caf50' : (status === 'reconnecting' ? '#ff9800' : '#555');
+        dot.title = t(status === 'reconnecting' ? 'history_reconnecting' : (status === 'online' ? 'history_online' : 'history_offline'));
+        if (btn) btn.style.opacity = status === 'offline' ? '0.45' : '';
       });
     });
   });
@@ -578,13 +602,30 @@ function renderHostPanel() {
       </div>
     </div>
 
-    ${currentVideoId ? `<button class="wt-btn blue" id="wt-sync-all-btn" style="margin-bottom:4px;">${t('sync_all_btn')}</button>` : ''}
+    ${currentVideoId ? `<button class="wt-btn blue" id="wt-sync-all-btn" style="margin-bottom:4px;">${t('resync_all_btn')}</button>` : ''}
+    ${renderDebugPanel()}
     <button class="wt-btn danger" id="wt-leave-btn">${t('leave_room')}</button>
   `;
 
   panel.querySelector('#wt-sync-all-btn')?.addEventListener('click', () => {
     const btn = panel.querySelector('#wt-sync-all-btn');
-    chrome.runtime.sendMessage({ type: 'sync_all' });
+    const videoId = adapter?.getVideoId() || '';
+    const platform = adapter?.getPlatform() || '';
+    const currentTime = Number(adapter?.getCurrentTime());
+    if (!videoId || !platform || !Number.isFinite(currentTime)) {
+      showInfo(t('sync_invalid_host_video'), 4000);
+      return;
+    }
+    chrome.runtime.sendMessage({
+      type: 'sync_all',
+      videoId,
+      platform,
+      currentTime,
+      paused: adapter?.isPaused() !== false,
+      isLive: adapter?.isLive() || false,
+    }, res => {
+      if (!res?.ok) showInfo(syncErrorText(res?.error), 4000);
+    });
     if (btn) { btn.disabled = true; setTimeout(() => { btn.disabled = false; }, 3000); }
   });
 
@@ -688,15 +729,15 @@ function renderGuestPanel() {
         }
         return `
           <div class="wt-member-item">
-            <div class="wt-member-dot ${m.is_host ? 'host' : ''}"></div>
+            <div class="wt-member-dot ${memberDotClass(m)}"></div>
             <div style="line-height:1.4;">
-              <div>${escHtml(m.name)}${m.is_host ? ' H' : ''}</div>
+              <div>${escHtml(m.name)}${m.is_host ? ' H' : ''}${memberStatusLabel(m)}</div>
               ${hostLine}
             </div>
           </div>`;
       }).join('');
 
-  const catchUpDisabled = hostSearching || !onSameVideo;
+  const catchUpDisabled = hostSearching;
 
   panel.innerHTML = `
     <div class="wt-panel-title">
@@ -712,17 +753,18 @@ function renderGuestPanel() {
       <div class="wt-member-header">${t('panel_members_header', { n: currentMembers.length })}</div>
       <div id="wt-member-list">${memberItemsHtml}</div>
     </div>
-    <button class="wt-btn blue" id="wt-catchup-btn"${catchUpDisabled ? ' disabled style="opacity:0.45;cursor:not-allowed;"' : ''}>${t('catch_up_btn')}</button>
+    <button class="wt-btn blue" id="wt-catchup-btn"${catchUpDisabled ? ' disabled style="opacity:0.45;cursor:not-allowed;"' : ''}>${t('resync_now_btn')}</button>
     ${(!hostSearching && !onSameVideo) ? `<button class="wt-btn primary" id="wt-joinhost-btn">${t('join_host_btn')}</button>` : ''}
+    ${renderDebugPanel()}
     <button class="wt-btn danger" id="wt-leave-btn">${t('leave_room')}</button>
   `;
 
   panel.querySelector('#wt-pc-close')?.addEventListener('click', () => { panelVisible = false; panel.style.display = 'none'; });
   panel.querySelector('#wt-catchup-btn')?.addEventListener('click', () => {
-    chrome.runtime.sendMessage({ type: 'catch_up' });
+    requestCatchUp();
   });
   panel.querySelector('#wt-joinhost-btn')?.addEventListener('click', () => {
-    chrome.runtime.sendMessage({ type: 'catch_up' });
+    requestCatchUp();
   });
   panel.querySelector('#wt-leave-btn')?.addEventListener('click', () => {
     chrome.runtime.sendMessage({ type: 'leave_room' });
@@ -736,11 +778,38 @@ function renderMemberItems(members, showTransfer = false) {
   if (!members || members.length === 0) return `<div style="color:#666;font-size:12px;">${t('member_empty')}</div>`;
   return members.map(m => `
     <div class="wt-member-item">
-      <div class="wt-member-dot ${m.is_host ? 'host' : ''}"></div>
-      <span style="flex:1;">${escHtml(m.name)}${m.is_host ? ' H' : ''}</span>
+      <div class="wt-member-dot ${memberDotClass(m)}"></div>
+      <span style="flex:1;">${escHtml(m.name)}${m.is_host ? ' H' : ''}${memberStatusLabel(m)}</span>
       ${showTransfer && !m.is_host ? `<button class="wt-copy-btn wt-xfer-btn" data-sid="${escHtml(m.sid)}" style="color:#ff9800;border-color:#ff9800;font-size:10px;padding:2px 6px;">${t('transfer_host_btn')}</button>` : ''}
     </div>
   `).join('');
+}
+
+function memberDotClass(member) {
+  const status = member?.status || 'online';
+  if (status === 'reconnecting') return 'reconnecting';
+  if (status === 'offline') return 'offline';
+  return member?.is_host ? 'host' : '';
+}
+
+function memberStatusLabel(member) {
+  const status = member?.status || 'online';
+  if (status === 'online') return '';
+  const key = status === 'reconnecting' ? 'member_status_reconnecting' : 'member_status_offline';
+  return ` <span style="font-size:10px;color:#ff9800;">${t(key)}</span>`;
+}
+
+function renderDebugPanel() {
+  const lines = [
+    `room=${currentToken ? 'yes' : '-'} role=${isHost ? 'host' : 'guest'} active=${isActiveTab ? 'yes' : 'no'}`,
+    `video=${currentPlatform || '-'}:${currentVideoId || '-'}`,
+    ...currentDebugLog.slice(0, 6).map(l => `${l.at} ${l.event}${l.detail ? ' ' + l.detail : ''}`),
+  ];
+  return `
+    <div class="wt-debug">
+      <div class="wt-debug-title">${t('debug_title')}</div>
+      ${lines.map(line => `<div class="wt-debug-line">${escHtml(line)}</div>`).join('')}
+    </div>`;
 }
 
 function updatePanelIfVisible() {
@@ -755,6 +824,8 @@ function updateStatusInPanel(status) {
     dot.className = 'wt-dot green'; text.textContent = t('panel_status_syncing');
   } else if (status === 'reconnecting') {
     dot.className = 'wt-dot orange'; text.textContent = t('panel_status_reconnecting');
+  } else if (status === 'host_reconnecting') {
+    dot.className = 'wt-dot orange'; text.textContent = t('panel_status_host_reconnecting');
   } else {
     dot.className = 'wt-dot gray'; text.textContent = t('panel_status_disconnected');
   }
@@ -845,6 +916,25 @@ function showInfo(text, duration = 4000) {
   infoTimerId = setTimeout(() => { infoBanner?.remove(); infoBanner = null; }, duration);
 }
 
+function syncErrorText(error) {
+  if (error === 'host_video_unavailable') return t('sync_host_video_unavailable');
+  if (error === 'invalid_host_video') return t('sync_invalid_host_video');
+  if (error === 'no_target_tab') return t('sync_no_target_tab');
+  return t('sync_send_failed');
+}
+
+function requestCatchUp() {
+  chrome.runtime.sendMessage({ type: 'catch_up' }, res => {
+    if (!res?.ok) showInfo(syncErrorText(res?.error), 4000);
+  });
+}
+
+function sendSyncAction(action, seekTime) {
+  chrome.runtime.sendMessage({ type: 'sync_action', action, seekTime }, res => {
+    if (!res?.ok) showInfo(t('sync_send_failed'), 3000);
+  });
+}
+
 function showVetoBanner(seconds) {
   const b = getBanners();
   if (!b) return;
@@ -884,7 +974,7 @@ function showVetoBanner(seconds) {
   }, 1000);
 }
 
-function showSwitchBanner(hostName, videoId, platform) {
+function showSwitchBanner(hostName, videoId, platform, isSyncInvite = false) {
   const b = getBanners();
   if (!b) return;
   switchBanner?.remove(); switchBanner = null;
@@ -892,8 +982,12 @@ function showSwitchBanner(hostName, videoId, platform) {
   switchBanner = document.createElement('div');
   switchBanner.className = 'wt-banner switch';
   const targetUrl = getVideoUrl(videoId, platform);
+  if (!targetUrl) {
+    showInfo(t('sync_host_video_unavailable'), 4000);
+    return;
+  }
   switchBanner.innerHTML = `
-    <span class="wt-banner-text">${t('banner_switch_text', { name: escHtml(hostName) })}</span>
+    <span class="wt-banner-text">${t(isSyncInvite ? 'banner_sync_invite_text' : 'banner_switch_text', { name: escHtml(hostName) })}</span>
     <button class="wt-bBtn ok" id="wt-sw-follow">${t('banner_switch_follow')}</button>
     <button class="wt-bBtn" id="wt-sw-close">${t('close')}</button>
     <button class="wt-bBtn danger" id="wt-sw-leave">${t('banner_switch_leave')}</button>
@@ -902,7 +996,11 @@ function showSwitchBanner(hostName, videoId, platform) {
 
   switchBanner.querySelector('#wt-sw-follow')?.addEventListener('click', () => {
     switchBanner?.remove(); switchBanner = null;
-    location.href = targetUrl;
+    try {
+      location.assign(targetUrl);
+    } catch (_) {
+      showInfo(t('sync_navigation_failed'), 4000);
+    }
   });
   switchBanner.querySelector('#wt-sw-close')?.addEventListener('click', () => {
     switchBanner?.remove(); switchBanner = null;
@@ -951,6 +1049,48 @@ function showLostBanner(hostName) {
   setTimeout(() => el.remove(), 8000);
 }
 
+function showRoomEndedBanner(hostName, reason) {
+  const b = getBanners();
+  if (!b) return;
+  const el = document.createElement('div');
+  el.className = 'wt-banner lost';
+  const key = reason === 'host_left'
+    ? 'banner_host_left_text'
+    : (reason === 'connection_timeout'
+        ? 'banner_connection_timeout_text'
+        : (reason === 'room_unavailable' ? 'banner_room_unavailable_text' : 'banner_lost_text'));
+  el.innerHTML = `
+    <span class="wt-banner-text">${t(key, { name: escHtml(hostName || '?') })}</span>
+    <button class="wt-bBtn" id="wt-ended-ok">${t('close')}</button>
+  `;
+  b.appendChild(el);
+  el.querySelector('#wt-ended-ok')?.addEventListener('click', () => el.remove());
+  setTimeout(() => el.remove(), 8000);
+}
+
+function showGuestVideoMismatchBanner() {
+  const b = getBanners();
+  if (!b || guestVideoMismatchBanner) return;
+  guestVideoMismatchBanner = document.createElement('div');
+  guestVideoMismatchBanner.className = 'wt-banner warn';
+  guestVideoMismatchBanner.innerHTML = `
+    <span class="wt-banner-text">${t('banner_guest_video_left')}</span>
+    <button class="wt-bBtn ok" id="wt-gv-stay">${t('stay_in_room_btn')}</button>
+    <button class="wt-bBtn danger" id="wt-gv-leave">${t('leave_room')}</button>
+  `;
+  b.appendChild(guestVideoMismatchBanner);
+  const close = () => { guestVideoMismatchBanner?.remove(); guestVideoMismatchBanner = null; };
+  guestVideoMismatchBanner.querySelector('#wt-gv-stay')?.addEventListener('click', close);
+  guestVideoMismatchBanner.querySelector('#wt-gv-leave')?.addEventListener('click', () => {
+    close();
+    chrome.runtime.sendMessage({ type: 'leave_room' });
+    isInRoom = false; isHost = false; currentMembers = [];
+    updateBubble();
+    panelVisible = false; if (panel) panel.style.display = 'none';
+    showInfo(t('info_left_room'), 3000);
+  });
+}
+
 function showNonActiveBanner(role) {
   const b = getBanners();
   if (!b) return;
@@ -989,7 +1129,7 @@ function showReconnectCatchUpPrompt() {
 function syncStateFromBackground(callback) {
   chrome.runtime.sendMessage({ type: 'get_status' }, res => {
     if (chrome.runtime.lastError || !res) { callback?.(); return; }
-    if (res.currentRoom) {
+    if (res.currentRoom?.connectionState === 'joined') {
       isInRoom = true;
       isHost = res.currentRoom.isHost;
       hostSearching = res.currentRoom.hostSearching || false;
@@ -999,6 +1139,7 @@ function syncStateFromBackground(callback) {
       currentVideoId = res.currentRoom.videoId || '';
       currentPlatform = res.currentRoom.platform || '';
       currentServerRegion = res.currentRoom.serverRegion || currentServerRegion;
+      currentDebugLog = res.debugLog || [];
     } else {
       isInRoom = false; isHost = false; isActiveTab = false;
       currentMembers = []; currentToken = '';
@@ -1017,15 +1158,15 @@ function initAdapter() {
 
   adapter.onPlay(() => {
     if (!isInRoom || !isActiveTab || suppressEvents || !isCurrentRoomVideo()) return;
-    chrome.runtime.sendMessage({ type: 'sync_action', action: 'play', seekTime: adapter.getCurrentTime() });
+    sendSyncAction('play', adapter.getCurrentTime());
   });
   adapter.onPause(() => {
     if (!isInRoom || !isActiveTab || suppressEvents || !isCurrentRoomVideo()) return;
-    chrome.runtime.sendMessage({ type: 'sync_action', action: 'pause', seekTime: adapter.getCurrentTime() });
+    sendSyncAction('pause', adapter.getCurrentTime());
   });
   adapter.onSeek(time => {
     if (!isInRoom || !isActiveTab || suppressEvents || !isCurrentRoomVideo()) return;
-    chrome.runtime.sendMessage({ type: 'sync_action', action: 'seek', seekTime: time });
+    sendSyncAction('seek', time);
   });
   adapter.onVideoChange((videoId, isLive) => {
     if (!isInRoom || !isActiveTab) return;
@@ -1048,11 +1189,8 @@ function initAdapter() {
       }
       updateBubble();
     } else if (currentVideoId && (!videoId || videoId !== currentVideoId)) {
-      chrome.runtime.sendMessage({ type: 'leave_room' });
-      isInRoom = false; isHost = false; currentMembers = [];
-      updateBubble();
-      panelVisible = false; if (panel) panel.style.display = 'none';
-      showInfo(t('info_left_room'), 3000);
+      showGuestVideoMismatchBanner();
+      updatePanelIfVisible();
     }
   });
 
@@ -1154,6 +1292,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       if (msg.status === 'reconnecting') setBubbleReconnecting();
       else updateBubble();
       updateStatusInPanel(msg.status);
+      syncStateFromBackground();
       break;
 
     case 'room_joined':
@@ -1206,17 +1345,31 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     case 'catch_up_result':
       if (!adapter || !isActiveTab) break;
       if (msg.videoId && (adapter.getPlatform() !== msg.platform || adapter.getVideoId() !== msg.videoId)) {
-        location.href = getVideoUrl(msg.videoId, msg.platform);
+        const targetUrl = getVideoUrl(msg.videoId, msg.platform);
+        if (!targetUrl) {
+          showInfo(t('sync_host_video_unavailable'), 4000);
+          break;
+        }
+        try {
+          location.assign(targetUrl);
+        } catch (_) {
+          showInfo(t('sync_navigation_failed'), 4000);
+        }
         break;
       }
       suppressEvents = true;
       if (adapter.seekTo(msg.seekTime) === false) {
         suppressEvents = false;
-        setTimeout(() => chrome.runtime.sendMessage({ type: 'catch_up' }), 1500);
+        showInfo(t('sync_player_unavailable'), 4000);
         break;
       }
       if (!msg.paused) adapter.play(); else adapter.pause();
       setTimeout(() => { suppressEvents = false; }, 800);
+      showInfo(t('sync_caught_up'), 2500);
+      break;
+
+    case 'catch_up_error':
+      showInfo(syncErrorText(msg.reason), 4000);
       break;
 
     case 'host_switched':
@@ -1225,20 +1378,30 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       currentVideoId = msg.videoId || '';
       currentPlatform = msg.platform || '';
       if (msg.syncAll) {
-        showInfo(t('info_sync_all'), 1000);
         if (adapter && adapter.getPlatform() === msg.platform && adapter.getVideoId() === msg.videoId) {
           suppressEvents = true;
           if (adapter.seekTo(msg.seekTime) !== false) {
             if (!msg.paused) adapter.play(); else adapter.pause();
+            showInfo(t('info_sync_all'), 2500);
+          } else {
+            showInfo(t('sync_player_unavailable'), 4000);
           }
           setTimeout(() => { suppressEvents = false; }, 800);
         } else {
-          location.href = getVideoUrl(msg.videoId, msg.platform);
+          showSwitchBanner(msg.hostName, msg.videoId, msg.platform, true);
         }
       } else {
         showSwitchBanner(msg.hostName, msg.videoId, msg.platform);
         updatePanelIfVisible();
       }
+      break;
+
+    case 'sync_all_result':
+      showInfo(t('sync_all_sent', { n: msg.count || 0 }), 3000);
+      break;
+
+    case 'sync_all_error':
+      showInfo(syncErrorText(msg.reason), 4000);
       break;
 
     case 'host_searching':
@@ -1250,6 +1413,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     case 'host_reconnecting':
       if (isInRoom && !isHost) {
         setBubbleReconnecting();
+        updateStatusInPanel('host_reconnecting');
         showInfo(t('banner_host_reconnecting', { name: escHtml(msg.hostName) }), 8000);
       }
       break;
@@ -1257,6 +1421,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     case 'host_reconnected':
       if (isInRoom && !isHost) {
         updateBubble();
+        updateStatusInPanel('connected');
         showInfo(t('banner_host_reconnected'), 3000);
       }
       break;
@@ -1269,7 +1434,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       switchBanner?.remove(); switchBanner = null;
       panelVisible = false; if (panel) panel.style.display = 'none';
       updateBubble();
-      if (!msg.autoLeave) showLostBanner(msg.hostName);
+      showRoomEndedBanner(msg.hostName, msg.reason);
       break;
 
     case 'room_dissolved':
@@ -1281,7 +1446,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         switchBanner?.remove(); switchBanner = null;
         panelVisible = false; if (panel) panel.style.display = 'none';
         updateBubble();
-        showLostBanner(msg.hostName);
+        showRoomEndedBanner(msg.hostName, msg.reason);
       }
       break;
 
