@@ -3,7 +3,7 @@
   "name": "WatchTogether",
   "version": "1.1.0",
   "description": "Sync YouTube and Bilibili playback with friends",
-  "permissions": ["storage", "tabs", "alarms"],
+  "permissions": ["storage", "tabs", "alarms", "idle"],
   "host_permissions": [
     "https://www.youtube.com/*",
     "https://www.bilibili.com/*",

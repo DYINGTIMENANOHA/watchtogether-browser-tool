@@ -8,7 +8,9 @@ class BilibiliAdapter {
   getVideoId() {
     const m = location.pathname.match(/\/video\/((?:BV|AV|av|bv)\w+)/i);
     if (!m) return '';
-    return m[1].slice(0, 2).toUpperCase() + m[1].slice(2);
+    const baseId = m[1].slice(0, 2).toUpperCase() + m[1].slice(2);
+    const page = Number.parseInt(new URLSearchParams(location.search).get('p') || '1', 10);
+    return Number.isInteger(page) && page > 1 ? `${baseId}@p${page}` : baseId;
   }
   getPlatform() { return 'bilibili'; }
   getCurrentTime() { return this._video ? this._video.currentTime : 0; }

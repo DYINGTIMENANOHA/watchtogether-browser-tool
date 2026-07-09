@@ -112,6 +112,8 @@ include /opt/watchtogether-extension/watchtogether/nginx_snippet.conf;
 | `PORT` | `8892` | HTTP listen port |
 | `MAX_ROOMS` | `10000` | Max concurrent rooms |
 | `ROOM_TTL_MINUTES` | `60` | Room expiry after inactivity |
+| `HOST_RECONNECT_MINUTES` | `180` | How long a disconnected host can reclaim the room |
+| `ROOM_MAX_IDLE_MINUTES` | `180` | Absolute ceiling: room is deleted after this long with no heartbeat/activity at all, regardless of members or reconnect state |
 | `TOKEN_FAIL_MAX` | `5` | Failed joins before IP ban |
 | `TOKEN_BAN_MINUTES` | `10` | IP ban duration |
 | `RATE_LIMIT_PER_MIN` | `5` | Room creations per IP per minute |

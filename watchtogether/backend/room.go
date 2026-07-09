@@ -7,12 +7,15 @@ import (
 	"math/big"
 	"net/http"
 	"runtime"
+	"sync"
 	"time"
 
 	"github.com/rs/zerolog/log"
 )
 
 const tokenChars = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
+
+var createRoomMu sync.Mutex
 
 func isSupportedPlatform(platform string) bool {
 	return platform == "youtube" || platform == "bilibili"
@@ -31,11 +34,6 @@ func generateID(length int) string {
 func handleCreateRoom(cfg Config) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		ip := GetIP(r)
-
-		if globalState.RoomCount() >= cfg.MaxRooms {
-			http.Error(w, `{"error":"server full"}`, http.StatusServiceUnavailable)
-			return
-		}
 
 		if !globalState.CheckRateLimit(ip, cfg.RateLimitPerMin) {
 			metricRateLimitHits.Inc()
@@ -63,6 +61,15 @@ func handleCreateRoom(cfg Config) http.HandlerFunc {
 		}
 		if req.ClientID == "" {
 			http.Error(w, `{"error":"client_id required"}`, http.StatusBadRequest)
+			return
+		}
+
+		createRoomMu.Lock()
+		defer createRoomMu.Unlock()
+
+		closeExistingHostRooms(req.ClientID)
+		if globalState.RoomCount() >= cfg.MaxRooms {
+			http.Error(w, `{"error":"server full"}`, http.StatusServiceUnavailable)
 			return
 		}
 
@@ -107,6 +114,36 @@ func handleCreateRoom(cfg Config) http.HandlerFunc {
 			RoomID: roomID,
 			Token:  token,
 		})
+	}
+}
+
+func closeExistingHostRooms(clientID string) {
+	if clientID == "" {
+		return
+	}
+	for _, room := range globalState.AllRooms() {
+		room.Lock()
+		if room.Closed || room.HostClientID != clientID {
+			room.Unlock()
+			continue
+		}
+		room.Closed = true
+		if room.HostReconnectTimer != nil {
+			room.HostReconnectTimer.Stop()
+			room.HostReconnectTimer = nil
+		}
+		for _, member := range room.Members {
+			_ = member.Send(map[string]any{
+				"type":      "room_lost",
+				"room_id":   room.RoomID,
+				"host_name": room.HostName,
+				"reason":    "replaced",
+			})
+		}
+		roomID := room.RoomID
+		room.Unlock()
+		globalState.DeleteRoom(roomID)
+		log.Info().Str("room_id", roomID).Str("client_id", clientID).Msg("room dissolved: host created a new room")
 	}
 }
 

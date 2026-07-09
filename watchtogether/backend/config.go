@@ -7,38 +7,42 @@ import (
 )
 
 type Config struct {
-	Port             string
-	BindHost         string
-	MaxRooms         int
-	MaxRoomMembers   int
-	RoomTTLMinutes   int
-	TokenFailMax     int
-	TokenBanMinutes  int
-	RateLimitPerMin  int
-	WSMaxPerIP       int
-	WSMsgPerSec      int
-	HeartbeatTimeout int
-	PromPort         string
-	AllowedOrigins   []string
-	ClientToken      string
+	Port                 string
+	BindHost             string
+	MaxRooms             int
+	MaxRoomMembers       int
+	RoomTTLMinutes       int
+	TokenFailMax         int
+	TokenBanMinutes      int
+	RateLimitPerMin      int
+	WSMaxPerIP           int
+	WSMsgPerSec          int
+	HeartbeatTimeout     int
+	HostReconnectMinutes int
+	RoomMaxIdleMinutes   int
+	PromPort             string
+	AllowedOrigins       []string
+	ClientToken          string
 }
 
 func LoadConfig() Config {
 	return Config{
-		Port:             getEnv("PORT", "8892"),
-		BindHost:         getEnv("BIND_HOST", ""),
-		MaxRooms:         getEnvInt("MAX_ROOMS", 10000),
-		MaxRoomMembers:   getEnvInt("MAX_ROOM_MEMBERS", 25),
-		RoomTTLMinutes:   getEnvInt("ROOM_TTL_MINUTES", 60),
-		TokenFailMax:     getEnvInt("TOKEN_FAIL_MAX", 10),
-		TokenBanMinutes:  getEnvInt("TOKEN_BAN_MINUTES", 5),
-		RateLimitPerMin:  getEnvInt("RATE_LIMIT_PER_MIN", 5),
-		WSMaxPerIP:       getEnvInt("WS_MAX_PER_IP", 20),
-		WSMsgPerSec:      getEnvInt("WS_MSG_PER_SEC", 10),
-		HeartbeatTimeout: getEnvInt("HEARTBEAT_TIMEOUT", 45),
-		PromPort:         getEnv("PROM_PORT", "9091"),
-		AllowedOrigins:   getEnvList("ALLOWED_ORIGINS"),
-		ClientToken:      getEnv("CLIENT_TOKEN", ""),
+		Port:                 getEnv("PORT", "8892"),
+		BindHost:             getEnv("BIND_HOST", ""),
+		MaxRooms:             getEnvInt("MAX_ROOMS", 10000),
+		MaxRoomMembers:       getEnvInt("MAX_ROOM_MEMBERS", 25),
+		RoomTTLMinutes:       getEnvInt("ROOM_TTL_MINUTES", 60),
+		TokenFailMax:         getEnvInt("TOKEN_FAIL_MAX", 10),
+		TokenBanMinutes:      getEnvInt("TOKEN_BAN_MINUTES", 5),
+		RateLimitPerMin:      getEnvInt("RATE_LIMIT_PER_MIN", 5),
+		WSMaxPerIP:           getEnvInt("WS_MAX_PER_IP", 20),
+		WSMsgPerSec:          getEnvInt("WS_MSG_PER_SEC", 10),
+		HeartbeatTimeout:     getEnvInt("HEARTBEAT_TIMEOUT", 45),
+		HostReconnectMinutes: getEnvInt("HOST_RECONNECT_MINUTES", 180),
+		RoomMaxIdleMinutes:   getEnvInt("ROOM_MAX_IDLE_MINUTES", 180),
+		PromPort:             getEnv("PROM_PORT", "9091"),
+		AllowedOrigins:       getEnvList("ALLOWED_ORIGINS"),
+		ClientToken:          getEnv("CLIENT_TOKEN", ""),
 	}
 }
 

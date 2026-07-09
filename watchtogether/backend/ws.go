@@ -14,9 +14,22 @@ import (
 )
 
 const (
-	HostReconnectWindow = 3 * time.Minute
-	HeartbeatInterval   = 15 * time.Second
+	HeartbeatInterval = 15 * time.Second
 )
+
+func hostReconnectWindow(cfg Config) time.Duration {
+	if cfg.HostReconnectMinutes <= 0 {
+		return 180 * time.Minute
+	}
+	return time.Duration(cfg.HostReconnectMinutes) * time.Minute
+}
+
+func roomMaxIdleWindow(cfg Config) time.Duration {
+	if cfg.RoomMaxIdleMinutes <= 0 {
+		return 180 * time.Minute
+	}
+	return time.Duration(cfg.RoomMaxIdleMinutes) * time.Minute
+}
 
 type msgRateTracker struct {
 	mu    sync.Mutex
@@ -462,6 +475,7 @@ func handleWS(cfg Config) http.HandlerFunc {
 				for _, m := range room.Members {
 					_ = m.Send(map[string]any{
 						"type":      "room_lost",
+						"room_id":   roomID,
 						"host_name": hello.Name,
 						"reason":    "host_left",
 					})
@@ -473,6 +487,8 @@ func handleWS(cfg Config) http.HandlerFunc {
 				room.HostSID = ""
 				room.HostReconnecting = true
 				room.LastActivity = time.Now()
+				reconnectWindow := hostReconnectWindow(cfg)
+				room.TokenExpires = room.LastActivity.Add(reconnectWindow)
 				hostName := hello.Name
 
 				for _, m := range room.Members {
@@ -484,7 +500,7 @@ func handleWS(cfg Config) http.HandlerFunc {
 				broadcastMemberList(room)
 
 				roomCopy := room
-				room.HostReconnectTimer = time.AfterFunc(HostReconnectWindow, func() {
+				room.HostReconnectTimer = time.AfterFunc(reconnectWindow, func() {
 					roomCopy.Lock()
 					if !roomCopy.HostReconnecting || roomCopy.Closed {
 						roomCopy.Unlock()
@@ -495,6 +511,7 @@ func handleWS(cfg Config) http.HandlerFunc {
 					for _, m := range roomCopy.Members {
 						_ = m.Send(map[string]any{
 							"type":      "room_lost",
+							"room_id":   roomID,
 							"host_name": hostName,
 							"reason":    "host_timeout",
 						})
@@ -505,7 +522,7 @@ func handleWS(cfg Config) http.HandlerFunc {
 				})
 
 				room.Unlock()
-				log.Info().Str("room_id", roomID).Str("host", hello.Name).Dur("window", HostReconnectWindow).Msg("host disconnected, waiting for reconnect")
+				log.Info().Str("room_id", roomID).Str("host", hello.Name).Dur("window", reconnectWindow).Msg("host disconnected, waiting for reconnect")
 			}
 		} else {
 			room.Broadcast(map[string]any{

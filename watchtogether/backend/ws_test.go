@@ -133,6 +133,79 @@ func TestCleanupPreservesHostReconnectWindow(t *testing.T) {
 	}
 }
 
+func TestCleanupEnforcesAbsoluteIdleCeiling(t *testing.T) {
+	useIsolatedState(t)
+
+	room := &Room{
+		RoomID:           "stale-room",
+		Token:            "stale-token",
+		HostReconnecting: true,
+		Members:          map[string]*Member{"m1": {ClientID: "m1"}},
+		ClientIDs:        make(map[string]string),
+		LastActivity:     time.Now().Add(-4 * time.Hour),
+	}
+	globalState.AddRoom(room)
+
+	// Even with members present and the host marked as reconnecting, a room
+	// with no activity at all for longer than RoomMaxIdleMinutes must be
+	// removed so it doesn't linger forever (e.g. host abandoned it after
+	// switching IP/login without a clean disconnect).
+	cleanExpiredRooms(Config{RoomTTLMinutes: 60, RoomMaxIdleMinutes: 180})
+	if _, ok := globalState.GetRoom(room.RoomID); ok {
+		t.Fatal("cleanup did not enforce the absolute idle ceiling")
+	}
+}
+
+func TestRoomMaxIdleWindowDefaultsToThreeHours(t *testing.T) {
+	if got := roomMaxIdleWindow(Config{}); got != 3*time.Hour {
+		t.Fatalf("default max idle window = %v, want 3h", got)
+	}
+	if got := roomMaxIdleWindow(Config{RoomMaxIdleMinutes: 30}); got != 30*time.Minute {
+		t.Fatalf("configured max idle window = %v, want 30m", got)
+	}
+}
+
+func TestHostReconnectWindowDefaultsToThreeHours(t *testing.T) {
+	if got := hostReconnectWindow(Config{}); got != 3*time.Hour {
+		t.Fatalf("default reconnect window = %v, want 3h", got)
+	}
+	if got := hostReconnectWindow(Config{HostReconnectMinutes: 15}); got != 15*time.Minute {
+		t.Fatalf("configured reconnect window = %v, want 15m", got)
+	}
+}
+
+func TestCreatingNewRoomClosesExistingRoomsForHost(t *testing.T) {
+	useIsolatedState(t)
+
+	oldRoom := &Room{
+		RoomID:             "old-room",
+		Token:              "old-token",
+		HostClientID:       "same-host",
+		HostReconnecting:   true,
+		HostReconnectTimer: time.AfterFunc(time.Hour, func() {}),
+		Members:            make(map[string]*Member),
+		ClientIDs:          make(map[string]string),
+	}
+	otherRoom := &Room{
+		RoomID:       "other-room",
+		Token:        "other-token",
+		HostClientID: "other-host",
+		Members:      make(map[string]*Member),
+		ClientIDs:    make(map[string]string),
+	}
+	globalState.AddRoom(oldRoom)
+	globalState.AddRoom(otherRoom)
+
+	closeExistingHostRooms("same-host")
+
+	if _, ok := globalState.GetRoom(oldRoom.RoomID); ok {
+		t.Fatal("old room for the same host was not removed")
+	}
+	if _, ok := globalState.GetRoom(otherRoom.RoomID); !ok {
+		t.Fatal("room belonging to another host was removed")
+	}
+}
+
 func useIsolatedState(t *testing.T) {
 	t.Helper()
 	previousState := globalState

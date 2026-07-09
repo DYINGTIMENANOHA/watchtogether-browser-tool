@@ -36,19 +36,28 @@ func cleanExpiredRooms(cfg Config) {
 	for _, room := range rooms {
 		room.Lock()
 		roomID := room.RoomID
-		shouldDelete := !room.Closed &&
-			!room.HostReconnecting &&
+		idle := now.Sub(room.LastActivity)
+		emptyExpired := !room.HostReconnecting &&
 			len(room.Members) == 0 &&
-			now.Sub(room.LastActivity) > time.Duration(cfg.RoomTTLMinutes)*time.Minute
+			idle > time.Duration(cfg.RoomTTLMinutes)*time.Minute
+		// Absolute ceiling: no heartbeat/activity at all for this long means the
+		// room is stale (e.g. host switched IP/login and abandoned it without a
+		// clean disconnect), so it's removed regardless of members or reconnect state.
+		absoluteIdle := idle > roomMaxIdleWindow(cfg)
+		shouldDelete := !room.Closed && (emptyExpired || absoluteIdle)
 		if shouldDelete {
 			room.Closed = true
+			if room.HostReconnectTimer != nil {
+				room.HostReconnectTimer.Stop()
+				room.HostReconnectTimer = nil
+			}
 		}
 		room.Unlock()
 
 		if shouldDelete {
 			globalState.DeleteRoom(roomID)
 			cleaned++
-			log.Debug().Str("room_id", roomID).Msg("cleaned empty expired room")
+			log.Debug().Str("room_id", roomID).Bool("absolute_idle", absoluteIdle).Msg("cleaned expired room")
 		}
 	}
 

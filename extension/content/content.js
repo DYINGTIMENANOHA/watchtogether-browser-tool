@@ -429,7 +429,9 @@ function renderIdlePanel() {
         updateBubble();
         if (info.video_id && !info.host_searching) {
           const url = getVideoUrl(info.video_id, info.platform);
-          if (!location.href.includes(info.video_id)) location.href = url;
+          if (adapter?.getPlatform() !== info.platform || adapter?.getVideoId() !== info.video_id) {
+            location.href = url;
+          }
         }
       });
     });
@@ -849,19 +851,36 @@ function getVideoTitle() {
     .trim();
 }
 
+function parseBilibiliVideoId(videoId) {
+  const match = String(videoId || '').match(/^((?:BV|AV)\w+)(?:@p([1-9]\d*))?$/i);
+  if (!match) return null;
+  return {
+    baseId: match[1].slice(0, 2).toUpperCase() + match[1].slice(2),
+    page: Number.parseInt(match[2] || '1', 10),
+  };
+}
+
 function getVideoUrl(videoId, platform) {
   if (!videoId || !platform) return '';
-  return platform === 'youtube'
-    ? `https://www.youtube.com/watch?v=${videoId}`
-    : `https://www.bilibili.com/video/${videoId}/`;
+  if (platform === 'youtube') return `https://www.youtube.com/watch?v=${videoId}`;
+  const parsed = parseBilibiliVideoId(videoId);
+  if (!parsed) return '';
+  return `https://www.bilibili.com/video/${parsed.baseId}/${parsed.page > 1 ? `?p=${parsed.page}` : ''}`;
 }
 
 function getInviteLink(videoId, platform, token, region) {
   if (!videoId || !platform || !token) return '';
   const regionParam = WT_SERVERS[region] ? region : '';
-  return platform === 'youtube'
-    ? `https://www.youtube.com/watch?v=${videoId}#wt-code=${token}${regionParam ? `&wt-region=${regionParam}` : ''}`
-    : `https://www.bilibili.com/video/${videoId}/?wt_code=${token}${regionParam ? `&wt_region=${regionParam}` : ''}`;
+  if (platform === 'youtube') {
+    return `https://www.youtube.com/watch?v=${videoId}#wt-code=${token}${regionParam ? `&wt-region=${regionParam}` : ''}`;
+  }
+  const parsed = parseBilibiliVideoId(videoId);
+  if (!parsed) return '';
+  const params = new URLSearchParams();
+  if (parsed.page > 1) params.set('p', String(parsed.page));
+  params.set('wt_code', token);
+  if (regionParam) params.set('wt_region', regionParam);
+  return `https://www.bilibili.com/video/${parsed.baseId}/?${params.toString()}`;
 }
 
 function regionPrefix(region) {
@@ -1058,7 +1077,9 @@ function showRoomEndedBanner(hostName, reason) {
     ? 'banner_host_left_text'
     : (reason === 'connection_timeout'
         ? 'banner_connection_timeout_text'
-        : (reason === 'room_unavailable' ? 'banner_room_unavailable_text' : 'banner_lost_text'));
+        : (reason === 'room_timeout'
+            ? 'banner_room_timeout_text'
+            : (reason === 'room_unavailable' ? 'banner_room_unavailable_text' : 'banner_lost_text')));
   el.innerHTML = `
     <span class="wt-banner-text">${t(key, { name: escHtml(hostName || '?') })}</span>
     <button class="wt-bBtn" id="wt-ended-ok">${t('close')}</button>

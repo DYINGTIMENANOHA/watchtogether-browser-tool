@@ -70,7 +70,9 @@ async function getCurrentVideoInfo() {
       } else if (url.includes('bilibili.com/video/')) {
         const m = url.match(/\/video\/((?:BV|AV|av|bv)\w+)/i);
         if (m) {
-          videoId = m[1].slice(0, 2).toUpperCase() + m[1].slice(2);
+          const baseId = m[1].slice(0, 2).toUpperCase() + m[1].slice(2);
+          const page = Number.parseInt(new URL(url).searchParams.get('p') || '1', 10);
+          videoId = Number.isInteger(page) && page > 1 ? `${baseId}@p${page}` : baseId;
         }
         platform = 'bilibili';
       }
@@ -115,13 +117,50 @@ async function loadRoomSettings() {
 }
 function saveRoomSettings(s) { chrome.storage.local.set(s); }
 
+function parseBilibiliVideoId(videoId) {
+  const match = String(videoId || '').match(/^((?:BV|AV)\w+)(?:@p([1-9]\d*))?$/i);
+  if (!match) return null;
+  return {
+    baseId: match[1].slice(0, 2).toUpperCase() + match[1].slice(2),
+    page: Number.parseInt(match[2] || '1', 10),
+  };
+}
+
+function getVideoUrl(videoId, platform) {
+  if (!videoId || !platform) return '';
+  if (platform === 'youtube') return `https://www.youtube.com/watch?v=${videoId}`;
+  const parsed = parseBilibiliVideoId(videoId);
+  if (!parsed) return '';
+  return `https://www.bilibili.com/video/${parsed.baseId}/${parsed.page > 1 ? `?p=${parsed.page}` : ''}`;
+}
+
+function getVideoIdFromUrl(rawUrl, platform) {
+  try {
+    const url = new URL(rawUrl);
+    if (platform === 'youtube') return url.searchParams.get('v') || '';
+    const match = url.pathname.match(/\/video\/((?:BV|AV|av|bv)\w+)/i);
+    if (!match) return '';
+    const baseId = match[1].slice(0, 2).toUpperCase() + match[1].slice(2);
+    const page = Number.parseInt(url.searchParams.get('p') || '1', 10);
+    return Number.isInteger(page) && page > 1 ? `${baseId}@p${page}` : baseId;
+  } catch (_) {
+    return '';
+  }
+}
+
 function getInviteLink(videoId, platform, token, region) {
   if (!videoId || !platform || !token) return '';
   const regionParam = WT_SERVERS[region] ? region : '';
   if (platform === 'youtube') {
     return `https://www.youtube.com/watch?v=${videoId}#wt-code=${token}${regionParam ? `&wt-region=${regionParam}` : ''}`;
   }
-  return `https://www.bilibili.com/video/${videoId}/?wt_code=${token}${regionParam ? `&wt_region=${regionParam}` : ''}`;
+  const parsed = parseBilibiliVideoId(videoId);
+  if (!parsed) return '';
+  const params = new URLSearchParams();
+  if (parsed.page > 1) params.set('p', String(parsed.page));
+  params.set('wt_code', token);
+  if (regionParam) params.set('wt_region', regionParam);
+  return `https://www.bilibili.com/video/${parsed.baseId}/?${params.toString()}`;
 }
 
 function regionPrefix(region) {
@@ -446,10 +485,10 @@ $('btn-join').addEventListener('click', async () => {
     $('btn-join').textContent = t('join_step_syncing');
     showRoomView({ isHost: false, roomId: info.room_id, hostName: info.host_name, platform: info.platform, members: [], serverRegion: joinRegion, connectionState: 'joined' }, 'connected');
     if (tab && info.video_id && !info.host_searching) {
-      const url = info.platform === 'youtube'
-        ? `https://www.youtube.com/watch?v=${info.video_id}`
-        : `https://www.bilibili.com/video/${info.video_id}/`;
-      if (!(tab.url || '').includes(info.video_id)) chrome.tabs.update(tab.id, { url });
+      const url = getVideoUrl(info.video_id, info.platform);
+      if (getVideoIdFromUrl(tab.url || '', info.platform) !== info.video_id) {
+        chrome.tabs.update(tab.id, { url });
+      }
     }
   } catch (e) {
     const msg = e.message || '';

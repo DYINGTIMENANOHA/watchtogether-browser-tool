@@ -111,12 +111,23 @@ chrome.runtime.onInstalled.addListener(async (details) => {
 
 chrome.runtime.onStartup?.addListener(() => {
   loadStoredRoom().then(storedRoom => {
-    if (storedRoom?.roomId && storedRoom?.nickname) startKeepAliveAlarm();
+    if (storedRoom?.roomId && storedRoom?.nickname) {
+      startKeepAliveAlarm();
+      keepAliveOrReconnect();
+    }
   });
 });
 
 chrome.alarms.onAlarm.addListener(alarm => {
   if (alarm.name === KEEPALIVE_ALARM) keepAliveOrReconnect();
+});
+
+chrome.idle?.setDetectionInterval(60);
+chrome.idle?.onStateChanged.addListener(state => {
+  if (state === 'active') {
+    addDebugLog('screen_active');
+    keepAliveOrReconnect();
+  }
 });
 
 const roomRestorePromise = keepAliveOrReconnect();
@@ -352,18 +363,20 @@ async function connectWS(roomId, name) {
       addDebugLog('reconnect_scheduled', `attempt=${reconnectAttempts} delay=${delay}`);
       if (currentRoom) currentRoom._wasReconnecting = true;
       reconnectTimer = setTimeout(() => connectWS(roomId, name), delay);
-    } else {
-      console.log('[WT] Reconnect exhausted, leaving room');
+    } else if (currentRoom?.connectionState === 'joined' || currentRoom?._wasReconnecting) {
+      console.log('[WT] Fast reconnect attempts exhausted; keeping room recovery state');
       addDebugLog('reconnect_exhausted', `attempts=${reconnectAttempts}`);
-      _broadcastToAllVideoTabs({
-        type: 'room_lost',
-        hostName: currentRoom?.hostName || currentRoom?.nickname || '',
-        reason: 'connection_timeout',
-        autoLeave: true,
-      });
+      finishPendingConnect({ ok: false, error: 'connection_timeout' });
+      currentRoom.connectionState = 'recovering';
+      currentRoom._wasReconnecting = true;
+      persistCurrentRoom();
+      startKeepAliveAlarm();
+      _broadcastStatus('reconnecting');
+    } else {
       finishPendingConnect({ ok: false, error: 'connection_timeout' });
       currentRoom = null; mySid = null; activeTabId = null;
       clearRoomSession();
+      _broadcastToAllVideoTabs({ type: 'self_left_room' });
     }
   };
 
@@ -405,7 +418,10 @@ function wsSend(msg) {
     return true;
   }
   addDebugLog('send_failed', msg?.type || '');
-  if (isRoomJoined()) _broadcastStatus('reconnecting');
+  if (currentRoom) {
+    _broadcastStatus('reconnecting');
+    keepAliveOrReconnect();
+  }
   return false;
 }
 
@@ -563,6 +579,10 @@ function handleServerMessage(msg) {
       break;
 
     case 'room_lost':
+      if (msg.room_id && currentRoom?.roomId && msg.room_id !== currentRoom.roomId) {
+        addDebugLog('stale_room_lost_ignored', msg.room_id);
+        break;
+      }
       addDebugLog('room_lost', msg.reason || msg.host_name || '');
       finishPendingConnect({ ok: false, error: 'room_lost' });
       sendToActiveTab({ type: 'room_lost', hostName: msg.host_name, reason: msg.reason || '' });
@@ -608,7 +628,7 @@ function handleServerMessage(msg) {
           _broadcastToAllVideoTabs({
             type: 'room_lost',
             hostName: currentRoom?.hostName || currentRoom?.nickname || '',
-            reason: 'room_unavailable',
+            reason: msg.message === 'room not found' ? 'room_timeout' : 'room_unavailable',
             autoLeave: true,
           });
         } else {
