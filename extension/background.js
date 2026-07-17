@@ -12,6 +12,10 @@ let wsState = 'disconnected'; // disconnected | connecting | connected | reconne
 let reconnectAttempts = 0;
 const MAX_RECONNECT = 8;
 let reconnectTimer = null;
+let connectTimeoutTimer = null;
+let lastServerMsgAt = 0;
+const WS_CONNECT_TIMEOUT_MS = 10000;
+const WS_STALE_MS = 40000;
 let currentRoom = null;
 let mySid = null;
 let activeTabId = null;
@@ -90,6 +94,22 @@ async function keepAliveOrReconnect() {
     return;
   }
   if (ws && ws.readyState === WebSocket.OPEN) {
+    const staleMs = Date.now() - lastServerMsgAt;
+    if (staleMs > WS_STALE_MS) {
+      // Connection reports OPEN but nothing (not even server pings) has arrived in a
+      // while: the socket is likely a zombie (dead peer/NAT that never sent FIN/RST).
+      // Force a reconnect instead of trusting readyState.
+      console.warn('[WT] WS appears stale, forcing reconnect. staleMs=', staleMs);
+      addDebugLog('zombie_ws_detected', `staleMs=${staleMs}`);
+      const rid = currentRoom.roomId, nm = currentRoom.nickname;
+      try { ws.onclose = null; ws.close(); } catch (_) {}
+      ws = null;
+      wsState = 'disconnected';
+      reconnectAttempts = 0;
+      currentRoom._wasReconnecting = true;
+      connectWS(rid, nm);
+      return;
+    }
     wsSend({ type: 'heartbeat' });
     return;
   }
@@ -283,6 +303,17 @@ async function connectWS(roomId, name) {
 
   try {
     ws = new WebSocket(`${wsUrl}/wt/ws?${wsParams.toString()}`);
+    if (connectTimeoutTimer) clearTimeout(connectTimeoutTimer);
+    connectTimeoutTimer = setTimeout(() => {
+      // A hung TCP/TLS handshake never fires onopen/onclose/onerror on its own,
+      // which would otherwise wedge wsState in 'connecting' forever and block
+      // every future reconnect attempt from the keepalive alarm.
+      if (ws && ws.readyState === WebSocket.CONNECTING) {
+        console.warn('[WT] WS connect attempt timed out');
+        addDebugLog('connect_timeout');
+        try { ws.close(); } catch (_) {}
+      }
+    }, WS_CONNECT_TIMEOUT_MS);
   } catch (e) {
     console.error('[WT] WS create failed:', e);
     wsState = 'disconnected';
@@ -295,6 +326,8 @@ async function connectWS(roomId, name) {
   }
 
   ws.onopen = () => {
+    if (connectTimeoutTimer) { clearTimeout(connectTimeoutTimer); connectTimeoutTimer = null; }
+    lastServerMsgAt = Date.now();
     addDebugLog('ws_open', roomId);
     wsState = 'connected';
     const wasReconnecting = currentRoom?._wasReconnecting || false;
@@ -330,11 +363,13 @@ async function connectWS(roomId, name) {
   };
 
   ws.onmessage = (e) => {
+    lastServerMsgAt = Date.now();
     try { handleServerMessage(JSON.parse(e.data)); }
     catch (err) { console.error('[WT] parse error', err); }
   };
 
   ws.onclose = (e) => {
+    if (connectTimeoutTimer) { clearTimeout(connectTimeoutTimer); connectTimeoutTimer = null; }
     console.log('[WT] WS closed, code:', e.code, 'attempts:', reconnectAttempts);
     addDebugLog('ws_close', `code=${e.code}`);
     wsState = 'disconnected';
