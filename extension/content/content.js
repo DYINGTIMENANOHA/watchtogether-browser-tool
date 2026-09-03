@@ -21,6 +21,10 @@ let currentPlatform = '';
 let currentServerRegion = '';
 let currentDebugLog = [];
 
+let keepAlivePort = null;
+let keepAlivePortRetryTimer = null;
+let keepAlivePingTimer = null;
+
 let shadowHost = null;
 let shadowRoot = null;
 let bubble = null;
@@ -163,11 +167,11 @@ function getStyles() {
     .wt-subsection{background:#1a1a1a;border-radius:6px;padding:6px 8px;margin-bottom:8px;}
     .wt-num-input{background:#111;border:1px solid #444;color:#fff;border-radius:4px;padding:2px 5px;font-size:12px;width:40px;}
 
-    .wt-banners{position:fixed;top:64px;left:50%;transform:translateX(-50%);display:flex;flex-direction:column;gap:8px;pointer-events:auto;min-width:320px;max-width:500px;z-index:1;}
+    .wt-banners{position:fixed;top:64px;left:50%;transform:translateX(-50%);display:flex;flex-direction:column;gap:8px;pointer-events:auto;width:max-content;min-width:280px;max-width:min(500px,calc(100vw - 24px));box-sizing:border-box;z-index:1;}
     .wt-banner{
       background:rgba(22,22,22,.95);color:#fff;font-size:13px;
-      padding:10px 16px;border-radius:10px;display:flex;align-items:center;gap:10px;
-      backdrop-filter:blur(6px);white-space:nowrap;box-shadow:0 4px 20px rgba(0,0,0,.5);
+      padding:10px 16px;border-radius:10px;display:flex;align-items:center;gap:10px;flex-wrap:wrap;
+      backdrop-filter:blur(6px);box-shadow:0 4px 20px rgba(0,0,0,.5);box-sizing:border-box;max-width:100%;
     }
     .wt-banner.veto{border-left:3px solid #ff9800;}
     .wt-banner.switch{border-left:3px solid #2196f3;}
@@ -175,8 +179,9 @@ function getStyles() {
     .wt-banner.info{border-left:3px solid #4caf50;}
     .wt-banner.warn{border-left:3px solid #ff9800;}
     .wt-cd{font-weight:700;color:#ff9800;min-width:26px;text-align:center;}
-    .wt-banner-text{flex:1;}
-    .wt-bBtn{background:rgba(255,255,255,.12);border:1px solid rgba(255,255,255,.3);color:#fff;padding:4px 10px;border-radius:5px;cursor:pointer;font-size:12px;white-space:nowrap;}
+    .wt-banner-text{flex:1 1 auto;min-width:180px;white-space:normal;overflow-wrap:break-word;word-break:break-word;}
+    .wt-banner-actions{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-left:auto;}
+    .wt-bBtn{background:rgba(255,255,255,.12);border:1px solid rgba(255,255,255,.3);color:#fff;padding:4px 10px;border-radius:5px;cursor:pointer;font-size:12px;white-space:nowrap;flex-shrink:0;}
     .wt-bBtn:hover{background:rgba(255,255,255,.22);}
     .wt-bBtn.ok{background:#4caf50;border-color:#4caf50;}
     .wt-bBtn.danger{border-color:#f44336;color:#ff6b6b;}
@@ -756,6 +761,7 @@ function renderGuestPanel() {
       <div id="wt-member-list">${memberItemsHtml}</div>
     </div>
     <button class="wt-btn blue" id="wt-catchup-btn"${catchUpDisabled ? ' disabled style="opacity:0.45;cursor:not-allowed;"' : ''}>${t('resync_now_btn')}</button>
+    <button class="wt-btn secondary" id="wt-hard-rejoin-btn">${t('hard_rejoin_btn')}</button>
     ${(!hostSearching && !onSameVideo) ? `<button class="wt-btn primary" id="wt-joinhost-btn">${t('join_host_btn')}</button>` : ''}
     ${renderDebugPanel()}
     <button class="wt-btn danger" id="wt-leave-btn">${t('leave_room')}</button>
@@ -767,6 +773,19 @@ function renderGuestPanel() {
   });
   panel.querySelector('#wt-joinhost-btn')?.addEventListener('click', () => {
     requestCatchUp();
+  });
+  panel.querySelector('#wt-hard-rejoin-btn')?.addEventListener('click', () => {
+    const btn = panel.querySelector('#wt-hard-rejoin-btn');
+    if (!btn || btn.disabled) return;
+    btn.disabled = true;
+    btn.textContent = t('hard_rejoin_working');
+    chrome.runtime.sendMessage({ type: 'hard_rejoin_room' }, res => {
+      if (chrome.runtime.lastError || !res?.ok) {
+        showInfo(t('hard_rejoin_failed'), 5000);
+      } else {
+        showInfo(t('hard_rejoin_done'), 3000);
+      }
+    });
   });
   panel.querySelector('#wt-leave-btn')?.addEventListener('click', () => {
     chrome.runtime.sendMessage({ type: 'leave_room' });
@@ -965,8 +984,10 @@ function showVetoBanner(seconds) {
   vetoBanner.className = 'wt-banner veto';
   vetoBanner.innerHTML = `
     <span class="wt-banner-text">${t('banner_veto_will_follow', { sec: remaining })}</span>
-    <button class="wt-bBtn ok" id="wt-veto-follow">${t('banner_veto_follow_now')}</button>
-    <button class="wt-bBtn danger" id="wt-veto-deny">${t('banner_veto_deny')}</button>
+    <div class="wt-banner-actions">
+      <button class="wt-bBtn ok" id="wt-veto-follow">${t('banner_veto_follow_now')}</button>
+      <button class="wt-bBtn danger" id="wt-veto-deny">${t('banner_veto_deny')}</button>
+    </div>
   `;
   b.appendChild(vetoBanner);
 
@@ -1007,9 +1028,11 @@ function showSwitchBanner(hostName, videoId, platform, isSyncInvite = false) {
   }
   switchBanner.innerHTML = `
     <span class="wt-banner-text">${t(isSyncInvite ? 'banner_sync_invite_text' : 'banner_switch_text', { name: escHtml(hostName) })}</span>
-    <button class="wt-bBtn ok" id="wt-sw-follow">${t('banner_switch_follow')}</button>
-    <button class="wt-bBtn" id="wt-sw-close">${t('close')}</button>
-    <button class="wt-bBtn danger" id="wt-sw-leave">${t('banner_switch_leave')}</button>
+    <div class="wt-banner-actions">
+      <button class="wt-bBtn ok" id="wt-sw-follow">${t('banner_switch_follow')}</button>
+      <button class="wt-bBtn" id="wt-sw-close">${t('close')}</button>
+      <button class="wt-bBtn danger" id="wt-sw-leave">${t('banner_switch_leave')}</button>
+    </div>
   `;
   b.appendChild(switchBanner);
 
@@ -1040,8 +1063,10 @@ function showTransferChoiceBanner(newHostName) {
   el.className = 'wt-banner info';
   el.innerHTML = `
     <span class="wt-banner-text">${t('you_are_guest_text', { name: escHtml(newHostName || '?') })}</span>
-    <button class="wt-bBtn ok" id="wt-stay-btn">${t('transfer_stay_btn')}</button>
-    <button class="wt-bBtn danger" id="wt-tleave-btn">${t('leave_room')}</button>
+    <div class="wt-banner-actions">
+      <button class="wt-bBtn ok" id="wt-stay-btn">${t('transfer_stay_btn')}</button>
+      <button class="wt-bBtn danger" id="wt-tleave-btn">${t('leave_room')}</button>
+    </div>
   `;
   b.appendChild(el);
   el.querySelector('#wt-stay-btn')?.addEventListener('click', () => el.remove());
@@ -1096,8 +1121,10 @@ function showGuestVideoMismatchBanner() {
   guestVideoMismatchBanner.className = 'wt-banner warn';
   guestVideoMismatchBanner.innerHTML = `
     <span class="wt-banner-text">${t('banner_guest_video_left')}</span>
-    <button class="wt-bBtn ok" id="wt-gv-stay">${t('stay_in_room_btn')}</button>
-    <button class="wt-bBtn danger" id="wt-gv-leave">${t('leave_room')}</button>
+    <div class="wt-banner-actions">
+      <button class="wt-bBtn ok" id="wt-gv-stay">${t('stay_in_room_btn')}</button>
+      <button class="wt-bBtn danger" id="wt-gv-leave">${t('leave_room')}</button>
+    </div>
   `;
   b.appendChild(guestVideoMismatchBanner);
   const close = () => { guestVideoMismatchBanner?.remove(); guestVideoMismatchBanner = null; };
@@ -1173,6 +1200,66 @@ function syncStateFromBackground(callback) {
 
 let positionTimer = null;
 
+function ensurePositionTimer() {
+  if (positionTimer) return;
+  positionTimer = setInterval(() => {
+    if (!isInRoom || !isHost || !isActiveTab || !isCurrentRoomVideo()) return;
+    chrome.runtime.sendMessage({ type: 'position_update', currentTime: adapter.getCurrentTime(), paused: adapter.isPaused() });
+  }, 3000);
+}
+
+function resetLocalRoomState() {
+  isInRoom = false; isHost = false; isActiveTab = false;
+  hostSearching = false; currentMembers = []; currentToken = '';
+  currentHostName = ''; currentVideoId = ''; currentPlatform = '';
+  suppressEvents = false;
+  clearInterval(vetoTimerId); vetoTimerId = null; vetoBanner?.remove(); vetoBanner = null;
+  switchBanner?.remove(); switchBanner = null;
+  guestVideoMismatchBanner?.remove(); guestVideoMismatchBanner = null;
+  panelVisible = false; if (panel) panel.style.display = 'none';
+  releaseKeepAlivePort();
+  updateBubble();
+}
+
+// The background service worker is non-persistent: Chrome can suspend it after ~30s with no
+// chrome.* activity, which used to happen exactly when this tab was backgrounded (switched away
+// from) — killing the shared WebSocket for however long it took the next alarm/event to wake the
+// worker back up and reconnect. Holding an open runtime.connect() Port from the active room tab
+// is one of the documented ways to keep an MV3 service worker alive, so as long as this tab is
+// open and in the room, the worker (and the WebSocket inside it) never gets torn down just
+// because the tab lost focus.
+function ensureKeepAlivePort() {
+  if (keepAlivePort) return;
+  try {
+    keepAlivePort = chrome.runtime.connect({ name: 'wt-keepalive' });
+  } catch (_) {
+    keepAlivePort = null;
+    return;
+  }
+  keepAlivePort.onDisconnect.addListener(() => {
+    void chrome.runtime.lastError;
+    keepAlivePort = null;
+    clearInterval(keepAlivePingTimer); keepAlivePingTimer = null;
+    if (isInRoom && isActiveTab) {
+      clearTimeout(keepAlivePortRetryTimer);
+      keepAlivePortRetryTimer = setTimeout(ensureKeepAlivePort, 1000);
+    }
+  });
+  clearInterval(keepAlivePingTimer);
+  keepAlivePingTimer = setInterval(() => {
+    try { keepAlivePort.postMessage({ type: 'ping' }); } catch (_) { releaseKeepAlivePort(); }
+  }, 20000);
+}
+
+function releaseKeepAlivePort() {
+  clearTimeout(keepAlivePortRetryTimer); keepAlivePortRetryTimer = null;
+  clearInterval(keepAlivePingTimer); keepAlivePingTimer = null;
+  if (keepAlivePort) {
+    try { keepAlivePort.disconnect(); } catch (_) {}
+    keepAlivePort = null;
+  }
+}
+
 function initAdapter() {
   if (!adapter) return;
   adapter.init();
@@ -1215,10 +1302,7 @@ function initAdapter() {
     }
   });
 
-  positionTimer = setInterval(() => {
-    if (!isInRoom || !isHost || !isActiveTab || !isCurrentRoomVideo()) return;
-    chrome.runtime.sendMessage({ type: 'position_update', currentTime: adapter.getCurrentTime(), paused: adapter.isPaused() });
-  }, 3000);
+  ensurePositionTimer();
 }
 
 async function onPageReady() {
@@ -1227,7 +1311,23 @@ async function onPageReady() {
 
   initOverlay();
 
-  const hashCode = getHashCode();
+  reconcileRoomState({ isInitialLoad: true });
+
+  initAdapter();
+
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible') reconcileRoomState({ isInitialLoad: false });
+  });
+}
+
+// The extension has no persistent link to the background service worker (every call is a
+// one-off sendMessage), so if a push notification (room_joined/became_active_tab/...) gets
+// dropped while this tab is backgrounded (SW suspended mid-flight, message delivery races),
+// isActiveTab/isInRoom/currentVideoId can get stuck stale here with no way to self-correct —
+// previously only a full page reload re-pulled the truth. Re-running this same reconciliation
+// whenever the tab regains visibility closes that gap without requiring a refresh.
+function reconcileRoomState({ isInitialLoad }) {
+  const hashCode = isInitialLoad ? getHashCode() : null;
 
   chrome.runtime.sendMessage({ type: 'check_is_active_tab' }, res => {
     if (chrome.runtime.lastError || !res) return;
@@ -1240,6 +1340,7 @@ async function onPageReady() {
 
       syncStateFromBackground(() => {
         if (isActiveTab) {
+          ensureKeepAlivePort();
           if (isHost) {
             const pageVid = adapter?.getVideoId();
             const pagePlat = adapter?.getPlatform();
@@ -1275,7 +1376,7 @@ async function onPageReady() {
               if (isCurrentRoomVideo()) chrome.runtime.sendMessage({ type: 'catch_up' });
             }, 600);
           }
-        } else {
+        } else if (isInitialLoad) {
           if (isHost && adapter?.getVideoId()) {
             showInfo(t('banner_host_invite_hint'), 10000);
           } else {
@@ -1283,11 +1384,11 @@ async function onPageReady() {
           }
         }
         updateBubble();
-        if (hashCode) showInfo(t('info_already_in_room'), 4000);
+        if (isInitialLoad && hashCode) showInfo(t('info_already_in_room'), 4000);
       });
     } else {
       updateBubble();
-      if (!sessionStorage.getItem('wt-no-banner')) {
+      if (isInitialLoad && !sessionStorage.getItem('wt-no-banner')) {
         setTimeout(() => {
           chrome.runtime.sendMessage({ type: 'get_status' }, s => {
             if (!s?.currentRoom && shadowRoot) {
@@ -1302,8 +1403,6 @@ async function onPageReady() {
       }
     }
   });
-
-  initAdapter();
 }
 
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
@@ -1320,6 +1419,8 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       isInRoom = true;
       isHost = msg.isHost;
       isActiveTab = true;
+      ensurePositionTimer();
+      ensureKeepAlivePort();
       syncStateFromBackground(() => {
         if (!msg.isHost) setTimeout(() => chrome.runtime.sendMessage({ type: 'catch_up' }), 600);
         updateBubble();
@@ -1329,11 +1430,13 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
 
     case 'became_active_tab':
       isActiveTab = true;
+      ensureKeepAlivePort();
       syncStateFromBackground(() => { updateBubble(); updatePanelIfVisible(); });
       break;
 
     case 'lost_active_tab':
       isActiveTab = false;
+      releaseKeepAlivePort();
       updateBubble();
       break;
 
@@ -1448,39 +1551,19 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       break;
 
     case 'room_lost':
-      isInRoom = false; isHost = false; isActiveTab = false;
-      hostSearching = false; currentMembers = []; currentToken = '';
-      clearInterval(positionTimer); positionTimer = null;
-      clearInterval(vetoTimerId); vetoTimerId = null; vetoBanner?.remove(); vetoBanner = null;
-      switchBanner?.remove(); switchBanner = null;
-      panelVisible = false; if (panel) panel.style.display = 'none';
-      updateBubble();
+      resetLocalRoomState();
       showRoomEndedBanner(msg.hostName, msg.reason);
       break;
 
     case 'room_dissolved':
       if (isInRoom) {
-        isInRoom = false; isHost = false; isActiveTab = false;
-        hostSearching = false; currentMembers = []; currentToken = '';
-        clearInterval(positionTimer); positionTimer = null;
-        clearInterval(vetoTimerId); vetoTimerId = null; vetoBanner?.remove(); vetoBanner = null;
-        switchBanner?.remove(); switchBanner = null;
-        panelVisible = false; if (panel) panel.style.display = 'none';
-        updateBubble();
+        resetLocalRoomState();
         showRoomEndedBanner(msg.hostName, msg.reason);
       }
       break;
 
     case 'self_left_room':
-      if (isInRoom) {
-        isInRoom = false; isHost = false; isActiveTab = false;
-        hostSearching = false; currentMembers = []; currentToken = '';
-        clearInterval(positionTimer); positionTimer = null;
-        clearInterval(vetoTimerId); vetoTimerId = null; vetoBanner?.remove(); vetoBanner = null;
-        switchBanner?.remove(); switchBanner = null;
-        panelVisible = false; if (panel) panel.style.display = 'none';
-        updateBubble();
-      }
+      resetLocalRoomState();
       break;
 
     case 'host_changed': {

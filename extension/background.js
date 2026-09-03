@@ -13,6 +13,8 @@ let reconnectAttempts = 0;
 const MAX_RECONNECT = 8;
 let reconnectTimer = null;
 let connectTimeoutTimer = null;
+let connectionEpoch = 0;
+let roomIntentEpoch = 0;
 let lastServerMsgAt = 0;
 const WS_CONNECT_TIMEOUT_MS = 10000;
 const WS_STALE_MS = 40000;
@@ -24,6 +26,7 @@ let _pendingTransferCallback = null;
 let _pendingConnectCallback = null;
 let _pendingConnectTimer = null;
 let _pendingCatchUpTabId = null;
+let _hardRejoinInProgress = false;
 let debugLog = [];
 
 function addDebugLog(event, detail = '') {
@@ -65,9 +68,11 @@ function persistCurrentRoom() {
   });
 }
 
-function clearRoomSession() {
-  chrome.storage.local.remove(ROOM_SESSION_KEY);
-  chrome.alarms.clear(KEEPALIVE_ALARM);
+async function clearRoomSession() {
+  await Promise.allSettled([
+    chrome.storage.local.remove(ROOM_SESSION_KEY),
+    chrome.alarms.clear(KEEPALIVE_ALARM),
+  ]);
 }
 
 function startKeepAliveAlarm() {
@@ -140,6 +145,17 @@ chrome.runtime.onStartup?.addListener(() => {
 
 chrome.alarms.onAlarm.addListener(alarm => {
   if (alarm.name === KEEPALIVE_ALARM) keepAliveOrReconnect();
+});
+
+// Content scripts hold a runtime.connect() Port open for as long as their tab is the active
+// room tab (see content.js ensureKeepAlivePort). Chrome keeps this service worker alive as long
+// as a Port is connected, so simply accepting and holding onto the port stops the worker (and
+// the WebSocket living inside it) from being suspended just because that tab lost focus. No
+// reply traffic is needed for this to work; onMessage just drains the periodic pings.
+chrome.runtime.onConnect.addListener(port => {
+  if (port.name !== 'wt-keepalive') return;
+  port.onMessage.addListener(() => {});
+  port.onDisconnect.addListener(() => { void chrome.runtime.lastError; });
 });
 
 chrome.idle?.setDetectionInterval(60);
@@ -277,15 +293,92 @@ function addToJoinHistory(entry) {
   });
 }
 
+async function joinRoomViaAPI(token, nickname, serverRegion = '') {
+  const s = await getSettings(serverRegion);
+  await requireServerPermission(s);
+  const res = await fetch(`${s.serverUrl}/wt/room/join`, {
+    method: 'POST',
+    headers: authHeaders(s, true),
+    body: JSON.stringify({ token, guest_name: nickname, client_id: await getClientId() }),
+  });
+  if (!res.ok) {
+    const errorBody = await res.json().catch(() => ({}));
+    throw new Error(errorBody.error || `Request failed (${res.status})`);
+  }
+  const data = await res.json();
+  data.serverRegion = s.serverRegion;
+  return data;
+}
+
+function beginRoomConnection(msg) {
+  activeTabId = msg.tabId || null;
+  currentRoom = {
+    roomId: msg.roomId,
+    token: msg.token || msg.joinToken || null,
+    isHost: msg.isHost,
+    hostName: msg.hostName || null,
+    videoId: msg.videoId || null,
+    platform: msg.platform || null,
+    title: msg.title || '',
+    nickname: msg.nickname || '',
+    vetoEnabled: false,
+    vetoSeconds: 5,
+    guestControlAllowed: false,
+    members: [],
+    hostSearching: msg.hostSearching || false,
+    serverRegion: msg.serverRegion || null,
+    connectionState: 'pending',
+    _wasReconnecting: false,
+  };
+  if (!msg.isHost && msg.joinToken) {
+    addToJoinHistory({
+      token: msg.joinToken,
+      hostName: msg.hostName || '',
+      platform: msg.platform || '',
+      videoId: msg.videoId || '',
+      title: msg.title || '',
+      serverRegion: msg.serverRegion || '',
+    });
+  }
+  reconnectAttempts = 0;
+  persistCurrentRoom();
+  startKeepAliveAlarm();
+  finishPendingConnect({ ok: false, error: 'replaced_by_new_connect' });
+
+  return new Promise(resolve => {
+    _pendingConnectCallback = resolve;
+    _pendingConnectTimer = setTimeout(() => {
+      finishPendingConnect({ ok: false, error: 'connection_timeout' });
+      if (currentRoom?.roomId === msg.roomId && currentRoom.connectionState !== 'joined') {
+        currentRoom = null; mySid = null; activeTabId = null;
+        clearRoomSession();
+        _broadcastToAllVideoTabs({ type: 'self_left_room' });
+      }
+    }, 20000);
+    connectWS(msg.roomId, msg.nickname);
+  });
+}
+
 async function connectWS(roomId, name) {
-  if (ws) { ws.onclose = null; ws.close(); ws = null; }
+  const epoch = ++connectionEpoch;
+  const previousSocket = ws;
+  if (previousSocket) {
+    previousSocket.onopen = null;
+    previousSocket.onmessage = null;
+    previousSocket.onclose = null;
+    previousSocket.onerror = null;
+    try { previousSocket.close(4000, 'connection replaced'); } catch (_) {}
+    if (ws === previousSocket) ws = null;
+  }
   wsState = 'connecting';
   _broadcastStatus('connecting');
 
   const [s, clientId] = await Promise.all([getSettings(currentRoom?.serverRegion || ''), getClientId()]);
+  if (epoch !== connectionEpoch || !currentRoom || currentRoom.roomId !== roomId) return;
   try {
     await requireServerPermission(s);
   } catch (e) {
+    if (epoch !== connectionEpoch) return;
     console.error('[WT] server permission error:', e);
     wsState = 'disconnected';
     _broadcastStatus('disconnected');
@@ -301,17 +394,23 @@ async function connectWS(roomId, name) {
 
   console.log('[WT] Connecting to WS:', wsUrl, 'room:', roomId, 'name:', name);
 
+  let socket;
   try {
-    ws = new WebSocket(`${wsUrl}/wt/ws?${wsParams.toString()}`);
+    socket = new WebSocket(`${wsUrl}/wt/ws?${wsParams.toString()}`);
+    if (epoch !== connectionEpoch) {
+      try { socket.close(4000, 'stale connection'); } catch (_) {}
+      return;
+    }
+    ws = socket;
     if (connectTimeoutTimer) clearTimeout(connectTimeoutTimer);
     connectTimeoutTimer = setTimeout(() => {
       // A hung TCP/TLS handshake never fires onopen/onclose/onerror on its own,
       // which would otherwise wedge wsState in 'connecting' forever and block
       // every future reconnect attempt from the keepalive alarm.
-      if (ws && ws.readyState === WebSocket.CONNECTING) {
+      if (epoch === connectionEpoch && ws === socket && socket.readyState === WebSocket.CONNECTING) {
         console.warn('[WT] WS connect attempt timed out');
         addDebugLog('connect_timeout');
-        try { ws.close(); } catch (_) {}
+        try { socket.close(); } catch (_) {}
       }
     }, WS_CONNECT_TIMEOUT_MS);
   } catch (e) {
@@ -325,7 +424,11 @@ async function connectWS(roomId, name) {
     return;
   }
 
-  ws.onopen = () => {
+  socket.onopen = () => {
+    if (epoch !== connectionEpoch || ws !== socket) {
+      try { socket.close(4000, 'stale connection'); } catch (_) {}
+      return;
+    }
     if (connectTimeoutTimer) { clearTimeout(connectTimeoutTimer); connectTimeoutTimer = null; }
     lastServerMsgAt = Date.now();
     addDebugLog('ws_open', roomId);
@@ -333,7 +436,7 @@ async function connectWS(roomId, name) {
     const wasReconnecting = currentRoom?._wasReconnecting || false;
     reconnectAttempts = 0;
     const helloMsg = { type: 'hello', name, client_id: clientId };
-    ws.send(JSON.stringify(helloMsg));
+    socket.send(JSON.stringify(helloMsg));
     console.log('[WT] WS connected, sent hello');
 
     if (currentRoom?.isHost) {
@@ -341,19 +444,19 @@ async function connectWS(roomId, name) {
         // On reconnect read from persistent storage — currentRoom may have stale/default values
         // if the service worker was suspended and restarted between connections.
         chrome.storage.local.get({ vetoEnabled: false, vetoSeconds: 5, allowGuestControl: false }, s => {
-          if (!currentRoom || ws?.readyState !== WebSocket.OPEN) return;
+          if (epoch !== connectionEpoch || !currentRoom || ws !== socket || socket.readyState !== WebSocket.OPEN) return;
           currentRoom.vetoEnabled = s.vetoEnabled;
           currentRoom.vetoSeconds = s.vetoSeconds;
           currentRoom.guestControlAllowed = s.allowGuestControl;
-          ws.send(JSON.stringify({ type: 'veto_config', action: s.vetoEnabled ? 'true' : 'false', seek_time: s.vetoSeconds }));
-          ws.send(JSON.stringify({ type: 'guest_control_config', allowed: s.allowGuestControl || false }));
+          socket.send(JSON.stringify({ type: 'veto_config', action: s.vetoEnabled ? 'true' : 'false', seek_time: s.vetoSeconds }));
+          socket.send(JSON.stringify({ type: 'guest_control_config', allowed: s.allowGuestControl || false }));
         });
       } else {
         if (currentRoom.vetoEnabled !== undefined) {
-          ws.send(JSON.stringify({ type: 'veto_config', action: currentRoom.vetoEnabled ? 'true' : 'false', seek_time: currentRoom.vetoSeconds || 5 }));
+          socket.send(JSON.stringify({ type: 'veto_config', action: currentRoom.vetoEnabled ? 'true' : 'false', seek_time: currentRoom.vetoSeconds || 5 }));
         }
         if (currentRoom.guestControlAllowed !== undefined) {
-          ws.send(JSON.stringify({ type: 'guest_control_config', allowed: currentRoom.guestControlAllowed }));
+          socket.send(JSON.stringify({ type: 'guest_control_config', allowed: currentRoom.guestControlAllowed }));
         }
       }
     }
@@ -362,13 +465,16 @@ async function connectWS(roomId, name) {
     _broadcastStatus('connected');
   };
 
-  ws.onmessage = (e) => {
+  socket.onmessage = (e) => {
+    if (epoch !== connectionEpoch || ws !== socket) return;
     lastServerMsgAt = Date.now();
     try { handleServerMessage(JSON.parse(e.data)); }
     catch (err) { console.error('[WT] parse error', err); }
   };
 
-  ws.onclose = (e) => {
+  socket.onclose = (e) => {
+    if (epoch !== connectionEpoch || ws !== socket) return;
+    ws = null;
     if (connectTimeoutTimer) { clearTimeout(connectTimeoutTimer); connectTimeoutTimer = null; }
     console.log('[WT] WS closed, code:', e.code, 'attempts:', reconnectAttempts);
     addDebugLog('ws_close', `code=${e.code}`);
@@ -397,7 +503,9 @@ async function connectWS(roomId, name) {
       console.log('[WT] Will reconnect in', delay, 'ms');
       addDebugLog('reconnect_scheduled', `attempt=${reconnectAttempts} delay=${delay}`);
       if (currentRoom) currentRoom._wasReconnecting = true;
-      reconnectTimer = setTimeout(() => connectWS(roomId, name), delay);
+      reconnectTimer = setTimeout(() => {
+        if (epoch === connectionEpoch && currentRoom?.roomId === roomId) connectWS(roomId, name);
+      }, delay);
     } else if (currentRoom?.connectionState === 'joined' || currentRoom?._wasReconnecting) {
       console.log('[WT] Fast reconnect attempts exhausted; keeping room recovery state');
       addDebugLog('reconnect_exhausted', `attempts=${reconnectAttempts}`);
@@ -415,28 +523,68 @@ async function connectWS(roomId, name) {
     }
   };
 
-  ws.onerror = (e) => { console.error('[WT] WS error', e); };
+  socket.onerror = (e) => {
+    if (epoch === connectionEpoch && ws === socket) console.error('[WT] WS error', e);
+  };
 }
 
-function disconnectWS() {
+async function disconnectWS({ reason = 'user_left', waitForAck = false } = {}) {
+  ++connectionEpoch;
   if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null; }
+  if (connectTimeoutTimer) { clearTimeout(connectTimeoutTimer); connectTimeoutTimer = null; }
   reconnectAttempts = MAX_RECONNECT;
-  if (ws) {
-    ws.onclose = null;
-    try { ws.send(JSON.stringify({ type: 'leave' })); } catch (_) {}
-    ws.close(4000, 'user left');
-    ws = null;
+  finishPendingConnect({ ok: false, error: reason });
+  if (_pendingTransferCallback) {
+    const cb = _pendingTransferCallback;
+    _pendingTransferCallback = null;
+    cb({ ok: false, error: reason });
   }
+  const socket = ws;
+  ws = null;
   wsState = 'disconnected';
   _pendingCatchUpTabId = null;
   currentRoom = null;
   mySid = null;
   activeTabId = null;
-  clearRoomSession();
+  lastServerMsgAt = 0;
+  await clearRoomSession();
+
+  if (!socket) return;
+  socket.onopen = null;
+  socket.onerror = null;
+  socket.onclose = null;
+  if (socket.readyState === WebSocket.OPEN) {
+    if (waitForAck) {
+      await new Promise(resolve => {
+        let settled = false;
+        const finish = () => {
+          if (settled) return;
+          settled = true;
+          clearTimeout(timer);
+          resolve();
+        };
+        const timer = setTimeout(finish, 750);
+        socket.onmessage = event => {
+          try {
+            if (JSON.parse(event.data)?.type === 'leave_ack') finish();
+          } catch (_) {}
+        };
+        socket.onclose = finish;
+        try { socket.send(JSON.stringify({ type: 'leave' })); } catch (_) { finish(); }
+      });
+    } else {
+      try { socket.send(JSON.stringify({ type: 'leave' })); } catch (_) {}
+    }
+  }
+  socket.onmessage = null;
+  socket.onclose = null;
+  try { socket.close(4000, 'user left'); } catch (_) {}
 }
 
 function closeLostRoomSocket() {
+  ++connectionEpoch;
   if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null; }
+  if (connectTimeoutTimer) { clearTimeout(connectTimeoutTimer); connectTimeoutTimer = null; }
   reconnectAttempts = MAX_RECONNECT;
   if (ws) {
     ws.onclose = null;
@@ -730,56 +878,89 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   switch (msg.type) {
 
     case 'connect_room':
-      activeTabId = msg.tabId || sender.tab?.id || null;
-      currentRoom = {
-        roomId: msg.roomId,
-        token: msg.token || msg.joinToken || null,
-        isHost: msg.isHost,
-        hostName: msg.hostName || null,
-        videoId: msg.videoId || null,
-        platform: msg.platform || null,
-        title: msg.title || '',
-        nickname: msg.nickname || '',
-        vetoEnabled: false,
-        vetoSeconds: 5,
-        guestControlAllowed: false,
-        members: [],
-        hostSearching: msg.hostSearching || false,
-        serverRegion: msg.serverRegion || null,
-        connectionState: 'pending',
-        _wasReconnecting: false,
-      };
-      if (!msg.isHost && msg.joinToken) {
-        addToJoinHistory({
-          token: msg.joinToken,
-          hostName: msg.hostName || '',
-          platform: msg.platform || '',
-          videoId: msg.videoId || '',
-          title: msg.title || '',
-          serverRegion: msg.serverRegion || '',
-        });
-      }
-      reconnectAttempts = 0;
-      persistCurrentRoom();
-      startKeepAliveAlarm();
-      finishPendingConnect({ ok: false, error: 'replaced_by_new_connect' });
-      _pendingConnectCallback = sendResponse;
-      _pendingConnectTimer = setTimeout(() => {
-        finishPendingConnect({ ok: false, error: 'connection_timeout' });
-        if (currentRoom?.connectionState !== 'joined') {
-          currentRoom = null; mySid = null; activeTabId = null;
-          clearRoomSession();
-          _broadcastToAllVideoTabs({ type: 'self_left_room' });
-        }
-      }, 20000);
-      connectWS(msg.roomId, msg.nickname);
+      ++roomIntentEpoch;
+      beginRoomConnection({ ...msg, tabId: msg.tabId || sender.tab?.id || null }).then(sendResponse);
       return true;
 
     case 'leave_room':
-      disconnectWS();
-      _broadcastToAllVideoTabs({ type: 'self_left_room' });
-      sendResponse({ ok: true });
-      break;
+      ++roomIntentEpoch;
+      disconnectWS({ waitForAck: true }).then(() => {
+        _broadcastToAllVideoTabs({ type: 'self_left_room' });
+        sendResponse({ ok: true });
+      });
+      return true;
+
+    case 'hard_rejoin_room':
+      (async () => {
+        if (_hardRejoinInProgress) {
+          sendResponse({ ok: false, error: 'rejoin_in_progress' });
+          return;
+        }
+        if (!currentRoom || currentRoom.isHost || !currentRoom.token || !currentRoom.nickname) {
+          sendResponse({ ok: false, error: 'not_rejoinable' });
+          return;
+        }
+        _hardRejoinInProgress = true;
+        const intentEpoch = ++roomIntentEpoch;
+        const snapshot = {
+          token: currentRoom.token,
+          nickname: currentRoom.nickname,
+          serverRegion: currentRoom.serverRegion || '',
+          tabId: msg.tabId || sender.tab?.id || activeTabId,
+        };
+        try {
+          await disconnectWS({ reason: 'hard_rejoin', waitForAck: true });
+          if (intentEpoch !== roomIntentEpoch) {
+            sendResponse({ ok: false, error: 'rejoin_cancelled' });
+            return;
+          }
+          _broadcastToAllVideoTabs({ type: 'self_left_room' });
+          const info = await joinRoomViaAPI(snapshot.token, snapshot.nickname, snapshot.serverRegion);
+          if (intentEpoch !== roomIntentEpoch) {
+            sendResponse({ ok: false, error: 'rejoin_cancelled' });
+            return;
+          }
+          const connected = await beginRoomConnection({
+            type: 'connect_room',
+            roomId: info.room_id,
+            token: null,
+            joinToken: snapshot.token,
+            isHost: false,
+            hostName: info.host_name,
+            videoId: info.video_id,
+            platform: info.platform,
+            title: info.title || '',
+            nickname: snapshot.nickname,
+            hostSearching: info.host_searching || false,
+            tabId: snapshot.tabId,
+            serverRegion: info.serverRegion || snapshot.serverRegion,
+          });
+          if (intentEpoch !== roomIntentEpoch) {
+            sendResponse({ ok: false, error: 'rejoin_cancelled' });
+            return;
+          }
+          if (!connected?.ok) {
+            await disconnectWS({ reason: connected?.error || 'connection_failed' });
+            _broadcastToAllVideoTabs({ type: 'self_left_room' });
+            sendResponse(connected || { ok: false, error: 'connection_failed' });
+            return;
+          }
+          addDebugLog('hard_rejoin_complete', info.room_id);
+          sendResponse({ ok: true });
+        } catch (e) {
+          if (intentEpoch !== roomIntentEpoch) {
+            sendResponse({ ok: false, error: 'rejoin_cancelled' });
+            return;
+          }
+          addDebugLog('hard_rejoin_failed', e.message || 'unknown');
+          await disconnectWS({ reason: 'hard_rejoin_failed' });
+          _broadcastToAllVideoTabs({ type: 'self_left_room' });
+          sendResponse({ ok: false, error: e.message || 'rejoin_failed' });
+        } finally {
+          _hardRejoinInProgress = false;
+        }
+      })();
+      return true;
 
     case 'get_status':
       roomRestorePromise.finally(() => {
@@ -912,20 +1093,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     case 'api_join_room':
       (async () => {
         try {
-          const s = await getSettings(msg.serverRegion || '');
-          await requireServerPermission(s);
-          const res = await fetch(`${s.serverUrl}/wt/room/join`, {
-            method: 'POST',
-            headers: authHeaders(s, true),
-            body: JSON.stringify({ token: msg.token, guest_name: msg.nickname, client_id: await getClientId() }),
-          });
-          if (!res.ok) {
-            const e = await res.json().catch(() => ({}));
-            sendResponse({ ok: false, error: e.error || `Request failed (${res.status})` });
-            return;
-          }
-          const data = await res.json();
-          data.serverRegion = s.serverRegion;
+          const data = await joinRoomViaAPI(msg.token, msg.nickname, msg.serverRegion || '');
           sendResponse({ ok: true, data });
         } catch (e) {
           sendResponse({ ok: false, error: e.message || 'Network error' });

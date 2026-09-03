@@ -544,6 +544,28 @@ $('btn-catch-up').addEventListener('click', async () => {
   });
 });
 
+$('btn-hard-rejoin').addEventListener('click', async () => {
+  const btn = $('btn-hard-rejoin');
+  if (btn.disabled) return;
+  btn.disabled = true;
+  btn.textContent = t('hard_rejoin_working');
+  setStatusDot('connecting');
+  const tabs = await new Promise(resolve => chrome.tabs.query({ active: true, currentWindow: true }, resolve));
+  const activeUrl = tabs[0]?.url || '';
+  const supportedTabId = activeUrl.includes('youtube.com') || activeUrl.includes('bilibili.com') ? tabs[0]?.id : null;
+  const res = await sendRuntimeMessage({ type: 'hard_rejoin_room', tabId: supportedTabId });
+  if (res?.ok) {
+    await init();
+    return;
+  }
+  clearInterval(memberRefreshTimer);
+  showView('idle');
+  renderHistory();
+  setError(t('hard_rejoin_failed'));
+  btn.disabled = false;
+  btn.textContent = t('hard_rejoin_btn');
+});
+
 $('btn-sync-all').addEventListener('click', async () => {
   const current = await getCurrentVideoInfo();
   if (!current) {

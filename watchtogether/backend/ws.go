@@ -447,6 +447,7 @@ func handleWS(cfg Config) http.HandlerFunc {
 
 			case "leave":
 				deliberateLeave = true
+				_ = member.Send(map[string]any{"type": "leave_ack"})
 				room.Unlock()
 				goto cleanup
 			}

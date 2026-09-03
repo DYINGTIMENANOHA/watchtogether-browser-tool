@@ -106,6 +106,101 @@ func TestSoloHostCanReconnectAfterUnexpectedDisconnect(t *testing.T) {
 	_ = second.Close()
 }
 
+func TestGuestReplacementAndDeliberateLeaveAreClean(t *testing.T) {
+	useIsolatedState(t)
+
+	room := &Room{
+		RoomID:       "guest-replace-room",
+		Token:        "guest-replace-token",
+		HostName:     "Host",
+		HostClientID: "host-client",
+		VideoID:      "video-test",
+		Platform:     "youtube",
+		Paused:       true,
+		Members:      make(map[string]*Member),
+		ClientIDs:    make(map[string]string),
+		CreatedAt:    time.Now(),
+		TokenExpires: time.Now().Add(time.Hour),
+		LastActivity: time.Now(),
+	}
+	globalState.AddRoom(room)
+
+	cfg := Config{
+		MaxRoomMembers:   25,
+		RoomTTLMinutes:   60,
+		WSMaxPerIP:       20,
+		WSMsgPerSec:      10,
+		HeartbeatTimeout: 5,
+	}
+	server := httptest.NewServer(handleWS(cfg))
+	t.Cleanup(server.Close)
+	wsURL := "ws" + strings.TrimPrefix(server.URL, "http") + "/wt/ws?room_id=" + room.RoomID
+
+	connect := func(name, clientID string) (*websocket.Conn, string) {
+		t.Helper()
+		conn, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
+		if err != nil {
+			t.Fatalf("dial websocket: %v", err)
+		}
+		if err := conn.WriteJSON(WSMessage{Type: "hello", Name: name, ClientID: clientID}); err != nil {
+			t.Fatalf("send hello: %v", err)
+		}
+		var welcome struct {
+			Type string `json:"type"`
+			SID  string `json:"sid"`
+		}
+		if err := conn.ReadJSON(&welcome); err != nil {
+			t.Fatalf("read welcome: %v", err)
+		}
+		if welcome.Type != "welcome" || welcome.SID == "" {
+			t.Fatalf("unexpected welcome: %+v", welcome)
+		}
+		return conn, welcome.SID
+	}
+
+	host, _ := connect("Host", "host-client")
+	t.Cleanup(func() { _ = host.Close() })
+	guest1, guest1SID := connect("Guest", "guest-client")
+	guest2, guest2SID := connect("Guest", "guest-client")
+	t.Cleanup(func() { _ = guest1.Close(); _ = guest2.Close() })
+
+	if guest1SID == guest2SID {
+		t.Fatal("replacement connection reused the old SID")
+	}
+	waitFor(t, time.Second, func() bool {
+		room.RLock()
+		defer room.RUnlock()
+		currentSID, ok := room.ClientIDs["guest-client"]
+		_, oldExists := room.Members[guest1SID]
+		_, newExists := room.Members[guest2SID]
+		return ok && currentSID == guest2SID && !oldExists && newExists
+	})
+
+	if err := guest2.WriteJSON(WSMessage{Type: "leave"}); err != nil {
+		t.Fatalf("send deliberate guest leave: %v", err)
+	}
+	_ = guest2.SetReadDeadline(time.Now().Add(time.Second))
+	for {
+		var ack struct {
+			Type string `json:"type"`
+		}
+		if err := guest2.ReadJSON(&ack); err != nil {
+			t.Fatalf("read leave acknowledgement: %v", err)
+		}
+		if ack.Type == "leave_ack" {
+			break
+		}
+	}
+
+	waitFor(t, time.Second, func() bool {
+		room.RLock()
+		defer room.RUnlock()
+		_, registered := room.ClientIDs["guest-client"]
+		_, exists := room.Members[guest2SID]
+		return !registered && !exists
+	})
+}
+
 func TestCleanupPreservesHostReconnectWindow(t *testing.T) {
 	useIsolatedState(t)
 
